@@ -14,9 +14,11 @@ services:
     volumes:
       # Persistent database (holds config, secrets encrypted with SECRET_KEY,
       # and all extracted recipes) - back this up!
-      - /docker/yum/data:/data
+      # Override the host path via DATA_PATH in .env, e.g. /docker/yum/data
+      - ${DATA_PATH:-./data}:/data
       # Markdown export target - point this at your Obsidian vault if desired
-      - /docker/yum/export:/export
+      # Override the host path via EXPORT_PATH in .env, e.g. /docker/yum/export
+      - ${EXPORT_PATH:-./export}:/export
 
   # --- Optional: local LLM via Ollama ---
   # Uncomment to run reconstruction/vision fully locally.
