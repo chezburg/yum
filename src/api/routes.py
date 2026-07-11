@@ -8,6 +8,7 @@
     POST /api/v1/jobs/{id}/export      - on-demand export
     GET  /api/v1/settings              - masked settings dump
     PUT  /api/v1/settings              - update settings
+    POST /api/v1/settings/test/{engine} - test engine connectivity (stt/llm/vision)
     POST /api/v1/instagram/login       - guided login step 1
     POST /api/v1/instagram/2fa         - guided login step 2 (2FA code)
     POST /api/v1/instagram/disconnect  - remove stored session
@@ -28,7 +29,7 @@ from src.acquisition import auth
 from src.config import ExportTarget
 from src.database.connection import get_session
 from src.database.models import JobStatus, RecipeJob
-from src.services import settings_service
+from src.services import engine_test, settings_service
 from src.services.export_service import ExportUnavailableError, export_job
 from src.services.job_events import events_for_job
 from src.utils.url_parser import URLParseError, extract_instagram_url
@@ -221,6 +222,16 @@ def update_settings_endpoint(request: SettingsUpdate) -> dict:
     return settings_service.masked_settings_dump()
 
 
+@router.post("/api/v1/settings/test/{engine}")
+def test_engine_endpoint(engine: str) -> dict:
+    """Test connectivity of a configured engine: stt, llm, or vision."""
+    if engine not in ("stt", "llm", "vision"):
+        raise HTTPException(status_code=404, detail="Unknown engine.")
+    settings = settings_service.get_settings()
+    ok, message = engine_test.test_engine(engine, settings)
+    return {"engine": engine, "ok": ok, "message": message}
+
+
 # ----------------------------------------------------------------- instagram
 
 
@@ -276,9 +287,12 @@ def health() -> dict:
         "status": "ok",
         "version": __version__,
         "config": {
-            "whisper_engine": settings.whisper_engine.value,
+            "stt_engine_mode": settings.stt_engine_mode.value,
+            "stt_model": settings.stt_model,
             "ocr_engine": settings.ocr_engine.value,
             "vision_enabled": settings.vision_enabled,
+            "vision_model": settings.vision_model,
+            "llm_engine_mode": settings.llm_engine_mode.value,
             "llm_model": settings.llm_model,
             "auto_export_on_success": settings.auto_export_on_success,
             "export_targets": [t.value for t in settings.export_target_list],

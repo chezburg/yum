@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        # Set to "true" to bake local models (faster-whisper, PaddleOCR) into the image
+        # Set to "true" to bake local OCR models (PaddleOCR) into the image
         INSTALL_LOCAL_MODELS: "false"
     container_name: yum
     restart: unless-stopped
@@ -20,10 +20,11 @@ services:
       # Override the host path via EXPORT_PATH in .env, e.g. /docker/yum/export
       - ${EXPORT_PATH:-./export}:/export
 
-  # --- Optional: local LLM via Ollama ---
+  # --- Optional: local LLM / Vision via Ollama ---
   # Uncomment to run reconstruction/vision fully locally.
-  # Then in the web UI Settings set:
-  #   LLM model:    ollama/llama3.1
+  # Then in the web UI Settings set (LLM and/or Vision engine):
+  #   Engine:       local
+  #   Model:        ollama/llama3.1   (LLM)  /  ollama/qwen2.5vl  (Vision)
   #   API base URL: http://ollama:11434
   #
   # ollama:
@@ -41,5 +42,21 @@ services:
   #   #           count: all
   #   #           capabilities: [gpu]
 
+  # --- Optional: local Speech-to-Text via an OpenAI-compatible Whisper server ---
+  # Uncomment to run transcription locally. Then in the web UI Settings set
+  # (Speech-to-Text engine):
+  #   Engine:       local
+  #   API base URL: http://whisper:8000/v1
+  #   API key:      (leave blank)
+  #   Model:        Systran/faster-whisper-small  (or your server's model id)
+  #
+  # whisper:
+  #   image: ghcr.io/speaches-ai/speaches:latest
+  #   container_name: whisper
+  #   restart: unless-stopped
+  #   volumes:
+  #     - whisper-models:/root/.cache/huggingface
+
 # volumes:
 #   ollama-models:
+#   whisper-models:

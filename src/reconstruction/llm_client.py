@@ -1,8 +1,9 @@
 """LLM client for recipe reconstruction via LiteLLM.
 
-Supports any LiteLLM provider (OpenAI, Gemini, Anthropic, Ollama, ...)
-configured through LLM_MODEL / LLM_API_KEY / LLM_API_BASE. Uses JSON
-mode with strict Pydantic validation and one retry on invalid output.
+Supports any LiteLLM provider (OpenAI, Gemini, Anthropic, Ollama, or any
+OpenAI/Anthropic-compatible endpoint) configured through the LLM engine
+settings (mode, API base URL, API key, model). Uses JSON mode with strict
+Pydantic validation and one retry on invalid output.
 """
 
 from __future__ import annotations

@@ -104,9 +104,35 @@ class TestSettingsEndpoints:
 
     def test_invalid_enum_rejected(self, client):
         resp = client.put(
-            "/api/v1/settings", json={"values": {"whisper_engine": "banana"}}
+            "/api/v1/settings", json={"values": {"stt_engine_mode": "banana"}}
         )
         assert resp.status_code == 422
+
+
+class TestEngineTestEndpoint:
+    def test_unknown_engine_404(self, client):
+        assert client.post("/api/v1/settings/test/bogus").status_code == 404
+
+    def test_stt_test_dispatches(self, client, monkeypatch):
+        from src.services import engine_test
+
+        monkeypatch.setattr(
+            engine_test, "test_engine", lambda e, s: (True, f"pinged {e}")
+        )
+        resp = client.post("/api/v1/settings/test/stt")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"engine": "stt", "ok": True, "message": "pinged stt"}
+
+    def test_llm_test_reports_failure(self, client, monkeypatch):
+        from src.services import engine_test
+
+        monkeypatch.setattr(
+            engine_test, "test_engine", lambda e, s: (False, "boom")
+        )
+        resp = client.post("/api/v1/settings/test/llm")
+        assert resp.status_code == 200
+        assert resp.json() == {"engine": "llm", "ok": False, "message": "boom"}
 
 
 class TestHealth:

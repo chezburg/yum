@@ -25,7 +25,7 @@ WORKDIR /app
 COPY requirements.txt requirements-local.txt ./
 
 # Base dependencies are always installed.
-# Set build arg INSTALL_LOCAL_MODELS=true to bake in faster-whisper/PaddleOCR.
+# Set build arg INSTALL_LOCAL_MODELS=true to bake in local OCR (PaddleOCR).
 ARG INSTALL_LOCAL_MODELS=false
 RUN pip install --no-cache-dir -r requirements.txt && \
     if [ "$INSTALL_LOCAL_MODELS" = "true" ]; then \

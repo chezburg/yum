@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from sqlmodel import select
 
-from src.config import OCREngine
+from src.config import EngineMode, OCREngine
 from src.database.connection import get_session
 from src.database.models import AppSetting
 from src.services import settings_service
@@ -17,6 +17,17 @@ class TestDefaults:
         assert settings.llm_model == "gemini/gemini-2.5-flash"
         assert settings.auto_export_on_success is True
         assert settings.ocr_engine == OCREngine.TESSERACT
+
+    def test_engine_defaults(self, app_env):
+        settings = settings_service.get_settings()
+        assert settings.stt_engine_mode == EngineMode.LOCAL
+        assert settings.stt_api_base == "http://localhost:8000/v1"
+        assert settings.stt_api_key == ""
+        assert settings.stt_model == ""
+        assert settings.llm_engine_mode == EngineMode.CLOUD
+        assert settings.vision_engine_mode == EngineMode.CLOUD
+        assert settings.vision_api_base == ""
+        assert settings.vision_api_key == ""
 
 
 class TestSaveAndLoad:
@@ -31,6 +42,28 @@ class TestSaveAndLoad:
         settings = settings_service.get_settings()
         assert settings.auto_export_on_success is False
         assert settings.ocr_engine == OCREngine.PADDLEOCR
+
+    def test_save_engine_mode(self, app_env):
+        settings_service.save_settings(
+            {"stt_engine_mode": "cloud", "stt_api_base": "https://api.groq.com/openai/v1"}
+        )
+        settings = settings_service.get_settings()
+        assert settings.stt_engine_mode == EngineMode.CLOUD
+        assert settings.stt_api_base == "https://api.groq.com/openai/v1"
+
+    def test_engine_secrets_encrypted(self, app_env):
+        settings_service.save_settings(
+            {"stt_api_key": "sk-stt", "vision_api_key": "sk-vis"}
+        )
+        with get_session() as session:
+            for key in ("stt_api_key", "vision_api_key"):
+                row = session.exec(
+                    select(AppSetting).where(AppSetting.key == key)
+                ).one()
+                assert row.value.startswith("enc:v1:")
+        settings = settings_service.get_settings()
+        assert settings.stt_api_key == "sk-stt"
+        assert settings.vision_api_key == "sk-vis"
 
     def test_unknown_key_rejected(self, app_env):
         with pytest.raises(ValueError, match="Unknown setting"):

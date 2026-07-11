@@ -20,7 +20,7 @@ from src.acquisition import auth
 from src.config import ExportTarget, Settings, field_groups, secret_field_names
 from src.database.connection import get_session
 from src.database.models import JobStatus, RecipeJob
-from src.services import settings_service
+from src.services import engine_test, settings_service
 from src.services.export_service import ExportUnavailableError, export_job
 from src.services.job_events import events_for_job
 from src.utils.url_parser import URLParseError, extract_instagram_url
@@ -328,6 +328,22 @@ async def settings_save(request: Request):
             secrets=secret_field_names(),
         )
     return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@router.post("/settings/test/{engine}", response_class=HTMLResponse)
+def settings_test_engine(request: Request, engine: str):
+    """HTMX target: test connectivity of a configured engine (stt/llm/vision).
+
+    Tests run against the currently *saved* settings, so users should save
+    before testing.
+    """
+    if engine not in ("stt", "llm", "vision"):
+        raise HTTPException(status_code=404, detail="Unknown engine.")
+    settings = settings_service.get_settings()
+    ok, message = engine_test.test_engine(engine, settings)
+    return _render(
+        request, "partials/engine_test_result.html", ok=ok, message=message
+    )
 
 
 # --------------------------------------------------------- instagram wizard

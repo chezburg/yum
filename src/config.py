@@ -24,10 +24,16 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class WhisperEngine(str, Enum):
+class EngineMode(str, Enum):
+    """Where an AI engine's API endpoint lives.
+
+    Both modes use the same generic HTTP client; 'local' simply means the
+    endpoint is a self-hosted server (Ollama, whisper server, ...) and
+    typically needs no API key.
+    """
+
     LOCAL = "local"
-    OPENAI = "openai"
-    GROQ = "groq"
+    CLOUD = "cloud"
 
 
 class OCREngine(str, Enum):
@@ -127,56 +133,51 @@ class Settings(BaseModel):
     )
 
     # --- Speech-to-Text ---
-    whisper_engine: WhisperEngine = Field(
-        default=WhisperEngine.LOCAL,
+    stt_engine_mode: EngineMode = Field(
+        default=EngineMode.LOCAL,
         json_schema_extra=_meta(
             "Speech-to-Text", "Engine",
-            choices=[e.value for e in WhisperEngine],
-            description="local = faster-whisper on this machine; openai/groq = cloud API.",
+            choices=[e.value for e in EngineMode],
+            description="local = self-hosted OpenAI-compatible Whisper server "
+            "(e.g. speaches, faster-whisper-server); cloud = hosted API "
+            "(OpenAI, Groq, ...). Both use the same endpoint settings below.",
         ),
     )
-    whisper_model_size: str = Field(
-        default="small",
+    stt_api_base: str = Field(
+        default="http://localhost:8000/v1",
         json_schema_extra=_meta(
-            "Speech-to-Text", "Local model size",
-            choices=["tiny", "base", "small", "medium", "large-v3"],
+            "Speech-to-Text", "API base URL",
+            description="OpenAI-compatible endpoint base, e.g. "
+            "http://localhost:8000/v1 (local server), "
+            "https://api.openai.com/v1, or https://api.groq.com/openai/v1.",
         ),
     )
-    whisper_device: str = Field(
-        default="auto",
-        json_schema_extra=_meta(
-            "Speech-to-Text", "Local device", choices=["auto", "cpu", "cuda"]
-        ),
-    )
-    whisper_compute_type: str = Field(
-        default="default",
-        json_schema_extra=_meta(
-            "Speech-to-Text", "Local compute type",
-            choices=["default", "int8", "float16"],
-        ),
-    )
-    openai_api_key: str = Field(
+    stt_api_key: str = Field(
         default="",
         json_schema_extra=_meta(
-            "Speech-to-Text", "OpenAI API key", secret=True,
-            description="Required when engine is 'openai'.",
+            "Speech-to-Text", "API key", secret=True,
+            description="Leave blank for local servers without auth.",
         ),
     )
-    groq_api_key: str = Field(
+    stt_model: str = Field(
         default="",
         json_schema_extra=_meta(
-            "Speech-to-Text", "Groq API key", secret=True,
-            description="Required when engine is 'groq'.",
+            "Speech-to-Text", "Model",
+            description="Model name sent to the endpoint, e.g. whisper-1 "
+            "(OpenAI), whisper-large-v3 (Groq). Leave blank to let a local "
+            "server use its default.",
         ),
     )
 
-    # --- OCR ---
+    # --- OCR (local fallback; skipped when Vision is enabled) ---
     ocr_engine: OCREngine = Field(
         default=OCREngine.TESSERACT,
         json_schema_extra=_meta(
             "OCR", "Engine",
             choices=[e.value for e in OCREngine],
-            description="paddleocr requires local model install; tesseract is bundled.",
+            description="Local on-screen text extraction, used only when "
+            "Vision is disabled (Vision reads on-screen text itself). "
+            "paddleocr requires local model install; tesseract is bundled.",
         ),
     )
     ocr_language: str = Field(
@@ -194,13 +195,42 @@ class Settings(BaseModel):
     # --- Vision ---
     vision_enabled: bool = Field(
         default=False,
-        json_schema_extra=_meta("Vision", "Enable vision analysis"),
+        json_schema_extra=_meta(
+            "Vision", "Enable vision analysis",
+            description="Analyze keyframes with a vision model. Also extracts "
+            "on-screen text, replacing the local OCR stage.",
+        ),
+    )
+    vision_engine_mode: EngineMode = Field(
+        default=EngineMode.CLOUD,
+        json_schema_extra=_meta(
+            "Vision", "Engine",
+            choices=[e.value for e in EngineMode],
+            description="local = self-hosted endpoint (e.g. Ollama); "
+            "cloud = hosted API. Both use the endpoint settings below.",
+        ),
+    )
+    vision_api_base: str = Field(
+        default="",
+        json_schema_extra=_meta(
+            "Vision", "API base URL",
+            description="Endpoint base, e.g. http://localhost:11434 (Ollama). "
+            "Leave blank for providers litellm knows from the model prefix.",
+        ),
+    )
+    vision_api_key: str = Field(
+        default="",
+        json_schema_extra=_meta(
+            "Vision", "API key", secret=True,
+            description="Leave blank for local servers without auth.",
+        ),
     )
     vision_model: str = Field(
         default="",
         json_schema_extra=_meta(
-            "Vision", "Vision model",
-            description="LiteLLM model string, e.g. gemini/gemini-2.5-flash or ollama/qwen2.5vl.",
+            "Vision", "Model",
+            description="LiteLLM model string, e.g. gemini/gemini-2.5-flash, "
+            "gpt-4o, or ollama/qwen2.5vl.",
         ),
     )
     vision_max_frames: int = Field(
@@ -211,27 +241,36 @@ class Settings(BaseModel):
     )
 
     # --- LLM reconstruction ---
-    llm_model: str = Field(
-        default="gemini/gemini-2.5-flash",
+    llm_engine_mode: EngineMode = Field(
+        default=EngineMode.CLOUD,
         json_schema_extra=_meta(
-            "LLM", "Model",
-            description="LiteLLM model string: gemini/gemini-2.5-flash, gpt-4o-mini, "
-            "anthropic/claude-sonnet-4-5, ollama/llama3.1, ...",
-        ),
-    )
-    llm_api_key: str = Field(
-        default="",
-        json_schema_extra=_meta(
-            "LLM", "API key", secret=True,
-            description="Provider API key (not needed for Ollama).",
+            "LLM", "Engine",
+            choices=[e.value for e in EngineMode],
+            description="local = self-hosted endpoint (e.g. Ollama); "
+            "cloud = hosted API. Both use the endpoint settings below.",
         ),
     )
     llm_api_base: str = Field(
         default="",
         json_schema_extra=_meta(
             "LLM", "API base URL",
-            description="Override for Ollama or self-hosted endpoints, "
-            "e.g. http://ollama:11434.",
+            description="Endpoint base, e.g. http://localhost:11434 (Ollama). "
+            "Leave blank for providers litellm knows from the model prefix.",
+        ),
+    )
+    llm_api_key: str = Field(
+        default="",
+        json_schema_extra=_meta(
+            "LLM", "API key", secret=True,
+            description="Leave blank for local servers without auth.",
+        ),
+    )
+    llm_model: str = Field(
+        default="gemini/gemini-2.5-flash",
+        json_schema_extra=_meta(
+            "LLM", "Model",
+            description="LiteLLM model string: gemini/gemini-2.5-flash, "
+            "gpt-4o-mini, anthropic/claude-sonnet-4-5, ollama/llama3.1, ...",
         ),
     )
 

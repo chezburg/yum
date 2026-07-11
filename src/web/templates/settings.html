@@ -23,6 +23,7 @@
   <!-- All other settings -->
   <form method="post" action="/settings" class="space-y-6">
     {% for group in groups %}
+    {% set engine = {"Speech-to-Text": "stt", "LLM": "llm", "Vision": "vision"}.get(group.name) %}
     <section class="rounded-xl bg-white shadow p-6">
       <h2 class="font-semibold mb-4">{{ group.name }}</h2>
       <div class="space-y-4">
@@ -66,6 +67,19 @@
         </div>
         {% endfor %}
       </div>
+      {% if engine %}
+      <div class="mt-4 border-t border-stone-100 pt-4">
+        <button type="button"
+                hx-post="/settings/test/{{ engine }}"
+                hx-target="#engine-test-{{ engine }}"
+                hx-swap="innerHTML"
+                class="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-stone-700 hover:bg-stone-50">
+          Test connection
+        </button>
+        <p class="text-xs text-stone-400 mt-1">Tests use saved settings - save first if you changed anything.</p>
+        <div id="engine-test-{{ engine }}"></div>
+      </div>
+      {% endif %}
     </section>
     {% endfor %}
     <div class="sticky bottom-4">

@@ -1,9 +1,10 @@
-"""Audio extraction (FFmpeg) and speech-to-text (configurable local/API).
+"""Audio extraction (FFmpeg) and speech-to-text via an OpenAI-compatible API.
 
-Engines:
-    - local: faster-whisper (requires requirements-local.txt)
-    - openai: OpenAI Whisper API
-    - groq: Groq Whisper API (fast + cheap)
+Transcription always goes through the standard `POST {base}/audio/transcriptions`
+REST endpoint, so any compatible server works: OpenAI, Groq, or a self-hosted
+Whisper server (speaches, faster-whisper-server, whisper.cpp server, ...).
+Configure via STT engine settings: mode (local/cloud), API base URL, API key,
+and model name.
 """
 
 from __future__ import annotations
@@ -13,9 +14,13 @@ import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from src.config import Settings, WhisperEngine
+import httpx
+
+from src.config import Settings
 
 logger = logging.getLogger(__name__)
+
+STT_TIMEOUT_SECONDS = 600.0
 
 
 class TranscriptionError(RuntimeError):
@@ -64,75 +69,72 @@ def extract_audio(video_path: Path, dest_dir: Path) -> Path:
 
 
 def transcribe(audio_path: Path, settings: Settings) -> list[TranscriptSegment]:
-    """Transcribe audio using the configured engine."""
-    engine = settings.whisper_engine
-    logger.info("Transcribing %s with engine=%s", audio_path.name, engine.value)
-
-    if engine == WhisperEngine.LOCAL:
-        return _transcribe_local(audio_path, settings)
-    if engine == WhisperEngine.OPENAI:
-        return _transcribe_openai(audio_path, settings)
-    if engine == WhisperEngine.GROQ:
-        return _transcribe_groq(audio_path, settings)
-    raise TranscriptionError(f"Unknown whisper engine: {engine}")
-
-
-def _transcribe_local(audio_path: Path, settings: Settings) -> list[TranscriptSegment]:
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError as exc:
+    """Transcribe audio via the configured OpenAI-compatible endpoint."""
+    if not settings.stt_api_base:
         raise TranscriptionError(
-            "faster-whisper is not installed. Install requirements-local.txt "
-            "or set WHISPER_ENGINE=openai/groq."
+            "STT API base URL is not configured. Set it in Settings "
+            "(e.g. http://localhost:8000/v1 for a local Whisper server)."
+        )
+    logger.info(
+        "Transcribing %s via %s (mode=%s, model=%s)",
+        audio_path.name,
+        settings.stt_api_base,
+        settings.stt_engine_mode.value,
+        settings.stt_model or "(server default)",
+    )
+
+    url = f"{settings.stt_api_base.rstrip('/')}/audio/transcriptions"
+    headers: dict[str, str] = {}
+    if settings.stt_api_key:
+        headers["Authorization"] = f"Bearer {settings.stt_api_key}"
+
+    data: dict[str, str] = {"response_format": "verbose_json"}
+    if settings.stt_model:
+        data["model"] = settings.stt_model
+
+    try:
+        with audio_path.open("rb") as fh:
+            response = httpx.post(
+                url,
+                headers=headers,
+                data=data,
+                files={"file": (audio_path.name, fh, "audio/wav")},
+                timeout=STT_TIMEOUT_SECONDS,
+            )
+    except httpx.HTTPError as exc:
+        raise TranscriptionError(
+            f"STT request to {url} failed: {exc}"
         ) from exc
 
-    model = WhisperModel(
-        settings.whisper_model_size,
-        device=settings.whisper_device,
-        compute_type=settings.whisper_compute_type,
-    )
-    segments, _info = model.transcribe(str(audio_path), vad_filter=True)
-    return [
-        TranscriptSegment(start=s.start, end=s.end, text=s.text.strip())
-        for s in segments
-        if s.text.strip()
-    ]
-
-
-def _transcribe_openai(audio_path: Path, settings: Settings) -> list[TranscriptSegment]:
-    if not settings.openai_api_key:
-        raise TranscriptionError("OPENAI_API_KEY is required for WHISPER_ENGINE=openai.")
-    from openai import OpenAI
-
-    client = OpenAI(api_key=settings.openai_api_key)
-    with audio_path.open("rb") as fh:
-        response = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=fh,
-            response_format="verbose_json",
-            timestamp_granularities=["segment"],
+    if response.status_code >= 400:
+        raise TranscriptionError(
+            f"STT endpoint returned HTTP {response.status_code}: "
+            f"{response.text[:500]}"
         )
-    return _segments_from_verbose_json(response)
 
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise TranscriptionError(
+            f"STT endpoint returned non-JSON response: {response.text[:200]}"
+        ) from exc
 
-def _transcribe_groq(audio_path: Path, settings: Settings) -> list[TranscriptSegment]:
-    if not settings.groq_api_key:
-        raise TranscriptionError("GROQ_API_KEY is required for WHISPER_ENGINE=groq.")
-    from groq import Groq
-
-    client = Groq(api_key=settings.groq_api_key)
-    with audio_path.open("rb") as fh:
-        response = client.audio.transcriptions.create(
-            model="whisper-large-v3",
-            file=(audio_path.name, fh),
-            response_format="verbose_json",
-        )
-    return _segments_from_verbose_json(response)
+    return _segments_from_verbose_json(payload)
 
 
 def _segments_from_verbose_json(response: object) -> list[TranscriptSegment]:
-    """Normalize verbose_json responses from OpenAI/Groq into segments."""
-    segments = getattr(response, "segments", None) or []
+    """Normalize a verbose_json transcription response into segments.
+
+    Accepts either a dict (parsed JSON) or an object with attributes,
+    covering the response shapes of all OpenAI-compatible servers.
+    """
+    if isinstance(response, dict):
+        segments = response.get("segments") or []
+        flat_text = response.get("text", "") or ""
+    else:
+        segments = getattr(response, "segments", None) or []
+        flat_text = getattr(response, "text", "") or ""
+
     result: list[TranscriptSegment] = []
     for seg in segments:
         get = seg.get if isinstance(seg, dict) else lambda k, s=seg: getattr(s, k, None)
@@ -147,7 +149,7 @@ def _segments_from_verbose_json(response: object) -> list[TranscriptSegment]:
             )
     if not result:
         # Fall back to the flat text if segment data is missing.
-        text = (getattr(response, "text", "") or "").strip()
+        text = flat_text.strip()
         if text:
             result.append(TranscriptSegment(start=0.0, end=0.0, text=text))
     return result

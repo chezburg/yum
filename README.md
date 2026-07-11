@@ -31,12 +31,11 @@ docker compose up -d --build
 
 # 3. Open http://localhost:8000 and configure via the Settings page:
 #    - Connect your Instagram account (guided login wizard, 2FA supported)
-#    - Choose Whisper/OCR engines (local models or cloud APIs)
-#    - Set your LLM provider + API key
+#    - Configure the STT / LLM / Vision engines (endpoint + API key + model)
 #    - Pick export targets (Mealie / Tandoor / Markdown / JSON)
 ```
 
-To bake local models (faster-whisper, PaddleOCR) into the image, set
+To bake local OCR models (PaddleOCR) into the image, set
 `INSTALL_LOCAL_MODELS: "true"` in `docker-compose.yml` before building.
 
 ## Usage
@@ -85,15 +84,21 @@ All runtime configuration lives **in the database** and is managed through the
 web UI. Secrets (API keys, Instagram session) are **encrypted at rest** with a
 key derived from `SECRET_KEY` - the single required environment variable.
 
-Every AI engine is independently configurable between **local models** and
-**cloud APIs**:
+Every AI engine (Speech-to-Text, LLM, Vision) is configured the same way,
+OpenRouter-style: pick **local** or **cloud**, then set an **API base URL**,
+**API key**, and **model name**. Any compatible endpoint works - OpenAI,
+Groq, Gemini, Anthropic, OpenRouter, Ollama, or your own self-hosted server.
+Each engine has a **Test connection** button in Settings.
 
-| Stage          | Local option            | API option                 |
-|----------------|-------------------------|----------------------------|
-| Speech-to-text | faster-whisper          | OpenAI / Groq              |
-| OCR            | PaddleOCR               | - (Tesseract bundled)      |
-| Reconstruction | Ollama (`ollama/...`)   | Gemini / OpenAI / Anthropic|
-| Vision (opt.)  | `ollama/qwen2.5vl`      | any LiteLLM VLM            |
+| Engine         | Local example                                      | Cloud example                        |
+|----------------|----------------------------------------------------|--------------------------------------|
+| Speech-to-text | OpenAI-compatible Whisper server (e.g. speaches)   | OpenAI / Groq (`whisper-large-v3`)   |
+| LLM            | Ollama: `ollama/llama3.1` @ `http://ollama:11434`  | `gemini/gemini-2.5-flash`, `gpt-4o-mini`, `anthropic/...` |
+| Vision (opt.)  | Ollama: `ollama/qwen2.5vl`                         | any LiteLLM VLM (`gpt-4o`, `gemini/*`) |
+
+On-screen text (OCR) is read by the Vision model when Vision is enabled;
+otherwise a bundled local engine (Tesseract, or PaddleOCR if installed)
+handles it - no cloud OCR configuration needed.
 
 ### Instagram authentication
 

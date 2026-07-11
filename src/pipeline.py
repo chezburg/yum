@@ -88,41 +88,57 @@ def run_pipeline(job_id: str) -> None:
                     )
                     timer.note(
                         f"{len(transcript_dicts)} segments "
-                        f"({settings.whisper_engine.value})"
+                        f"({settings.stt_engine_mode.value})"
                     )
             except TranscriptionError as exc:
                 logger.warning("Transcription failed (continuing): %s", exc)
             job.raw_transcript = json.dumps(transcript_dicts)
             _touch(session, job)
 
-            # --- Stage 3: OCR ---
+            # When Vision is enabled it reads on-screen text itself, so the
+            # local OCR stage is skipped and its evidence slot is filled from
+            # the vision model's extracted text overlays.
+            vision_active = bool(settings.vision_enabled and settings.vision_model)
+
+            # --- Stage 3: OCR (local fallback) ---
             _set_status(session, job, JobStatus.OCR)
             ocr_dicts: list[dict] = []
-            try:
-                with stage_timer(job_id, "ocr") as timer:
-                    ocr_dicts = detections_to_dicts(
-                        run_ocr(content.video_path, settings)
-                    )
-                    timer.note(
-                        f"{len(ocr_dicts)} unique texts ({settings.ocr_engine.value})"
-                    )
-            except Exception as exc:  # noqa: BLE001 - OCR is best-effort
-                logger.warning("OCR failed (continuing): %s", exc)
-            job.raw_ocr_text = json.dumps(ocr_dicts)
-            _touch(session, job)
+            if vision_active:
+                record_skip(
+                    job_id, "ocr",
+                    "Vision enabled - on-screen text handled by the vision model",
+                )
+            else:
+                try:
+                    with stage_timer(job_id, "ocr") as timer:
+                        ocr_dicts = detections_to_dicts(
+                            run_ocr(content.video_path, settings)
+                        )
+                        timer.note(
+                            f"{len(ocr_dicts)} unique texts ({settings.ocr_engine.value})"
+                        )
+                except Exception as exc:  # noqa: BLE001 - OCR is best-effort
+                    logger.warning("OCR failed (continuing): %s", exc)
 
             # --- Stage 4: Vision ---
             _set_status(session, job, JobStatus.VISION)
             vision_facts: list[str] = []
-            if settings.vision_enabled and settings.vision_model:
+            if vision_active:
                 try:
                     with stage_timer(job_id, "vision") as timer:
-                        vision_facts = run_vision(content.video_path, settings)
-                        timer.note(f"{len(vision_facts)} observed facts")
+                        result = run_vision(content.video_path, settings)
+                        vision_facts = result.facts
+                        # Vision-read overlays fill the OCR evidence slot.
+                        ocr_dicts = _vision_text_to_ocr_dicts(result.onscreen_text)
+                        timer.note(
+                            f"{len(vision_facts)} facts, "
+                            f"{len(ocr_dicts)} on-screen texts"
+                        )
                 except Exception as exc:  # noqa: BLE001 - vision is best-effort
                     logger.warning("Vision failed (continuing): %s", exc)
             else:
                 record_skip(job_id, "vision", "Vision analysis disabled in settings")
+            job.raw_ocr_text = json.dumps(ocr_dicts)
             job.raw_vision = json.dumps(vision_facts)
             _touch(session, job)
 
@@ -202,3 +218,17 @@ def _touch(session: Session, job: RecipeJob) -> None:
     session.add(job)
     session.commit()
     session.refresh(job)
+
+
+def _vision_text_to_ocr_dicts(onscreen_text: list[str]) -> list[dict]:
+    """Adapt vision-read on-screen text into OCR-detection-shaped dicts.
+
+    Keeps EvidenceBundle / prompt construction unchanged (they consume
+    OCR detections regardless of whether text came from a local OCR engine
+    or the vision model).
+    """
+    return [
+        {"timestamp": 0.0, "text": text, "confidence": 1.0}
+        for text in onscreen_text
+        if text.strip()
+    ]

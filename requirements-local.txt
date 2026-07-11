@@ -1,8 +1,10 @@
 # Optional local-model dependencies.
-# Install these only if you configure local engines in .env:
-#   WHISPER_ENGINE=local  -> faster-whisper
+# Install these only if you use a local OCR engine:
 #   OCR_ENGINE=paddleocr  -> paddleocr + paddlepaddle
+#
+# Note: local Speech-to-Text no longer runs in-process. Run any OpenAI-compatible
+# Whisper server (e.g. speaches, faster-whisper-server) and point the STT engine's
+# API base URL at it.
 
-faster-whisper>=1.0.3
 paddleocr>=2.8.0
 paddlepaddle>=2.6.0

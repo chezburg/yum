@@ -154,6 +154,38 @@ class TestSettingsForm:
         )
         assert settings_service.get_settings().llm_api_key == "sk-keepme"
 
+    def test_settings_page_shows_test_buttons(self, client):
+        resp = client.get("/settings")
+        assert resp.status_code == 200
+        assert "/settings/test/stt" in resp.text
+        assert "/settings/test/llm" in resp.text
+        assert "/settings/test/vision" in resp.text
+
+
+class TestEngineTestRoute:
+    def test_unknown_engine_404(self, client):
+        assert client.post("/settings/test/bogus").status_code == 404
+
+    def test_result_banner_rendered(self, client, monkeypatch):
+        from src.services import engine_test
+
+        monkeypatch.setattr(
+            engine_test, "test_engine", lambda e, s: (True, "Endpoint reachable")
+        )
+        resp = client.post("/settings/test/stt")
+        assert resp.status_code == 200
+        assert "Endpoint reachable" in resp.text
+
+    def test_failure_banner_rendered(self, client, monkeypatch):
+        from src.services import engine_test
+
+        monkeypatch.setattr(
+            engine_test, "test_engine", lambda e, s: (False, "Unreachable")
+        )
+        resp = client.post("/settings/test/llm")
+        assert resp.status_code == 200
+        assert "Unreachable" in resp.text
+
 
 class TestInstagramWizardRoutes:
     def test_login_flow_via_web(self, client):

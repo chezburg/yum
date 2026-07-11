@@ -19,9 +19,7 @@ jinja2>=3.1.0
 yt-dlp>=2025.1.15
 instaloader>=4.13
 
-# Processing (API clients; local engines live in requirements-local.txt)
-openai>=1.40.0
-groq>=0.11.0
+# Processing (STT uses OpenAI-compatible HTTP; local OCR lives in requirements-local.txt)
 opencv-python-headless>=4.10.0
 numpy>=1.26.0
 pytesseract>=0.3.13
