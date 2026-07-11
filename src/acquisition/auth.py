@@ -32,10 +32,17 @@ from instaloader.exceptions import (
     TwoFactorAuthRequiredException,
 )
 
+from src.acquisition.instaloader_patch import apply_metadata_patch
 from src.config import Settings
 from src.services import settings_service
 
 logger = logging.getLogger(__name__)
+
+# Instagram deprecated the doc_id instaloader uses for Post._obtain_metadata()
+# around June 2026 (see instaloader_patch module docstring for details). Apply
+# the compatibility patch as soon as this module - the sole entry point for
+# constructing Instaloader instances - is imported.
+apply_metadata_patch()
 
 # Pending 2FA logins expire after this many seconds.
 _PENDING_TTL = 300.0
