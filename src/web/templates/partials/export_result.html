@@ -1,0 +1,16 @@
+{% if error %}
+<div class="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">{{ error }}</div>
+{% else %}
+{% set data = results if results is defined else exports %}
+{% if data %}
+<ul class="space-y-1">
+  {% for target, outcome in data.items() %}
+  <li class="text-sm {% if outcome.startswith('ok') %}text-green-700{% else %}text-red-600{% endif %}">
+    {% if outcome.startswith('ok') %}✓{% else %}✗{% endif %}
+    <span class="font-medium">{{ target }}</span>:
+    {{ outcome.split(':', 1)[1] if ':' in outcome else outcome }}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endif %}

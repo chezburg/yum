@@ -1,4 +1,4 @@
-"""Comment acquisition via Instaloader (cookie-authenticated).
+"""Comment acquisition via Instaloader (session from the login wizard).
 
 Extracts the evidence that most often contains exact quantities:
 pinned comments, creator replies, and top comments.
@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass
-from http.cookiejar import MozillaCookieJar
-from pathlib import Path
 
 import instaloader
 
+from src.acquisition.auth import build_loader
 from src.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -35,40 +34,6 @@ class Comment:
     is_reply: bool
 
 
-def _build_loader(settings: Settings) -> instaloader.Instaloader:
-    """Create an Instaloader instance authenticated from a Netscape cookie file."""
-    loader = instaloader.Instaloader(
-        download_pictures=False,
-        download_videos=False,
-        download_video_thumbnails=False,
-        download_comments=False,
-        save_metadata=False,
-        quiet=True,
-    )
-
-    cookie_file = settings.instagram_cookie_file
-    if cookie_file and Path(cookie_file).is_file():
-        jar = MozillaCookieJar(str(cookie_file))
-        jar.load(ignore_discard=True, ignore_expires=True)
-        ig_cookies = {
-            c.name: c.value
-            for c in jar
-            if c.domain.endswith("instagram.com") and c.value is not None
-        }
-        if "sessionid" in ig_cookies:
-            loader.context._session.cookies.update(ig_cookies)
-            username = settings.instagram_username
-            if username:
-                loader.context.username = username
-            logger.info("Loaded Instagram session from cookie file.")
-        else:
-            logger.warning("Cookie file has no 'sessionid' - comments may be unavailable.")
-    else:
-        logger.warning("No Instagram cookie file configured - fetching comments anonymously.")
-
-    return loader
-
-
 def fetch_comments(shortcode: str, settings: Settings) -> list[Comment]:
     """Fetch pinned/creator/top comments for a post.
 
@@ -76,7 +41,7 @@ def fetch_comments(shortcode: str, settings: Settings) -> list[Comment]:
     so the pipeline can continue without comments rather than abort.
     """
     try:
-        loader = _build_loader(settings)
+        loader = build_loader(settings)
         post = instaloader.Post.from_shortcode(loader.context, shortcode)
         creator = post.owner_username
 

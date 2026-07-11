@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Recipes{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <div class="flex items-center justify-between">
+    <h1 class="text-2xl font-bold">Recipes</h1>
+    <form method="get" action="/recipes" class="flex gap-2">
+      <input type="text" name="q" value="{{ q }}" placeholder="Search titles…"
+             class="rounded-lg border border-stone-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500">
+      <button class="rounded-lg bg-stone-200 px-3 py-1.5 text-sm font-medium hover:bg-stone-300">Search</button>
+    </form>
+  </div>
+
+  {% if recipes %}
+  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    {% for r in recipes %}
+    <a href="/recipes/{{ r.id }}"
+       class="rounded-xl bg-white shadow p-5 hover:shadow-md transition-shadow block">
+      <h2 class="font-semibold text-stone-800 mb-1">{{ r.title }}</h2>
+      <p class="text-xs text-stone-400 truncate mb-3">{{ r.url }}</p>
+      <div class="flex items-center gap-2 flex-wrap">
+        {% if r.confidence is not none %}
+        <span class="rounded-full px-2 py-0.5 text-xs font-medium
+          {% if r.confidence >= 0.8 %}bg-green-100 text-green-700
+          {% elif r.confidence >= 0.5 %}bg-amber-100 text-amber-700
+          {% else %}bg-red-100 text-red-700{% endif %}">
+          {{ "%.0f"|format(r.confidence * 100) }}% confident
+        </span>
+        {% endif %}
+        {% for tag in r.tags[:3] %}
+        <span class="rounded-full bg-stone-100 px-2 py-0.5 text-xs text-stone-500">{{ tag }}</span>
+        {% endfor %}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-sm text-stone-500">
+    {% if q %}No recipes match "{{ q }}".{% else %}No recipes yet - extract one from the <a href="/" class="text-orange-600 underline">dashboard</a>.{% endif %}
+  </p>
+  {% endif %}
+</div>
+{% endblock %}

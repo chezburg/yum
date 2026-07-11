@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="space-y-8">
+
+  {% if not instagram.connected %}
+  <div class="rounded-lg bg-amber-50 border border-amber-300 p-4 text-sm text-amber-800">
+    ⚠️ Instagram is not connected. Downloads may be rate-limited.
+    <a href="/settings" class="font-semibold underline">Connect your account →</a>
+  </div>
+  {% endif %}
+
+  <section class="rounded-xl bg-white shadow p-6">
+    <h1 class="text-lg font-semibold mb-1">Extract a recipe</h1>
+    <p class="text-sm text-stone-500 mb-4">
+      Paste an Instagram Reel/Post link, or the full text shared from the Instagram app.
+    </p>
+    <form hx-post="/submit" hx-target="#submit-result" hx-swap="innerHTML" class="flex gap-3">
+      <input type="text" name="text" required
+             placeholder="https://www.instagram.com/reel/…  (or shared text)"
+             class="flex-1 rounded-lg border border-stone-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500">
+      <button type="submit"
+              class="rounded-lg bg-orange-600 px-5 py-2 text-sm font-semibold text-white hover:bg-orange-700">
+        Extract
+      </button>
+    </form>
+    <div id="submit-result" class="mt-4"></div>
+  </section>
+
+  <section>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-lg font-semibold">Recent jobs</h2>
+      <a href="/jobs" class="text-sm text-orange-600 hover:underline">View all →</a>
+    </div>
+    {% if jobs %}
+    <div class="rounded-xl bg-white shadow divide-y divide-stone-100">
+      {% for job in jobs %}
+      <div class="px-5 py-3"
+           {% if job.is_running %}hx-get="/jobs/{{ job.id }}/status" hx-trigger="every 3s" hx-swap="innerHTML"{% endif %}>
+        {% include "partials/job_status.html" %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-sm text-stone-500">No jobs yet - share your first Reel above!</p>
+    {% endif %}
+  </section>
+
+</div>
+{% endblock %}

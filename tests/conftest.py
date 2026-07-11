@@ -11,6 +11,59 @@ from src.reconstruction.schemas import (
     StructuredRecipe,
 )
 
+TEST_SECRET_KEY = "test-secret-key-0123456789abcdef"
+
+
+@pytest.fixture
+def app_env(tmp_path, monkeypatch):
+    """Isolated app environment: temp SQLite DB + SECRET_KEY, fresh caches.
+
+    Creates the schema via SQLModel.create_all (fast; skips Alembic).
+    Yields the database path.
+    """
+    monkeypatch.setenv("SECRET_KEY", TEST_SECRET_KEY)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
+
+    import src.config as config
+    import src.database.connection as connection
+    from src.services import settings_service
+
+    config.get_bootstrap.cache_clear()
+    connection._engine = None
+    settings_service.invalidate_cache()
+
+    from sqlmodel import SQLModel
+
+    from src.database import models  # noqa: F401
+
+    SQLModel.metadata.create_all(connection.get_engine())
+
+    yield tmp_path / "test.db"
+
+    config.get_bootstrap.cache_clear()
+    connection._engine = None
+    settings_service.invalidate_cache()
+
+
+@pytest.fixture
+def client(app_env, monkeypatch):
+    """FastAPI TestClient with a stubbed pipeline executor.
+
+    Bypasses main.py's lifespan-driven Alembic migration (schema already
+    created by app_env) while still wiring the job submitter.
+    """
+    from fastapi.testclient import TestClient
+
+    import src.main as main
+
+    submitted: list[str] = []
+    monkeypatch.setattr(main, "init_db", lambda: None)
+    monkeypatch.setattr(main, "_submit", submitted.append)
+
+    with TestClient(main.app) as test_client:
+        test_client.submitted_jobs = submitted
+        yield test_client
+
 
 @pytest.fixture
 def sample_recipe() -> StructuredRecipe:

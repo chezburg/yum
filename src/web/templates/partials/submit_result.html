@@ -1,0 +1,16 @@
+{% if error %}
+<div class="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">
+  {{ error }}
+</div>
+{% elif already_done %}
+<div class="rounded-lg bg-green-50 border border-green-200 p-3 text-sm text-green-700">
+  ✓ This reel was already extracted.
+  <a href="/recipes/{{ job_id }}" class="font-semibold underline">View the recipe →</a>
+</div>
+{% else %}
+<div class="rounded-lg bg-blue-50 border border-blue-200 p-3 text-sm text-blue-700"
+     hx-get="/jobs/{{ job_id }}/status" hx-trigger="every 3s" hx-swap="innerHTML">
+  ⏳ Extraction queued…
+  <a href="/jobs/{{ job_id }}" class="font-semibold underline">Watch progress →</a>
+</div>
+{% endif %}

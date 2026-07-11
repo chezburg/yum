@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="space-y-6 max-w-3xl">
+  <h1 class="text-2xl font-bold">Settings</h1>
+
+  {% if saved %}
+  <div class="rounded-lg bg-green-50 border border-green-200 p-3 text-sm text-green-700">
+    ✓ Settings saved.
+  </div>
+  {% endif %}
+  {% if error %}
+  <div class="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <!-- Instagram connection wizard -->
+  <section class="rounded-xl bg-white shadow p-6" id="instagram-card">
+    {% include "partials/instagram_card.html" %}
+  </section>
+
+  <!-- All other settings -->
+  <form method="post" action="/settings" class="space-y-6">
+    {% for group in groups %}
+    <section class="rounded-xl bg-white shadow p-6">
+      <h2 class="font-semibold mb-4">{{ group.name }}</h2>
+      <div class="space-y-4">
+        {% for field in group.fields %}
+        <div>
+          <label for="{{ field.name }}" class="block text-sm font-medium text-stone-700">
+            {{ field.label }}
+            {% if field.secret %}
+              {% if field.value %}
+              <span class="ml-1 rounded bg-green-100 text-green-700 px-1.5 py-0.5 text-xs">configured ✓</span>
+              {% else %}
+              <span class="ml-1 rounded bg-stone-100 text-stone-500 px-1.5 py-0.5 text-xs">not set</span>
+              {% endif %}
+            {% endif %}
+          </label>
+          {% if field.description %}
+          <p class="text-xs text-stone-400 mb-1">{{ field.description }}</p>
+          {% endif %}
+
+          {% if field.is_bool %}
+          <input type="checkbox" id="{{ field.name }}" name="{{ field.name }}"
+                 {% if field.value %}checked{% endif %}
+                 class="h-4 w-4 rounded border-stone-300 text-orange-600 focus:ring-orange-500">
+          {% elif field.choices %}
+          <select id="{{ field.name }}" name="{{ field.name }}"
+                  class="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm">
+            {% for choice in field.choices %}
+            <option value="{{ choice }}" {% if field.value == choice %}selected{% endif %}>{{ choice }}</option>
+            {% endfor %}
+          </select>
+          {% elif field.secret %}
+          <input type="password" id="{{ field.name }}" name="{{ field.name }}"
+                 value="" placeholder="{% if field.value %}•••••••• (leave blank to keep){% else %}enter value{% endif %}"
+                 autocomplete="new-password"
+                 class="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm">
+          {% else %}
+          <input type="text" id="{{ field.name }}" name="{{ field.name }}"
+                 value="{{ field.value }}"
+                 class="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm">
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+    {% endfor %}
+    <div class="sticky bottom-4">
+      <button type="submit"
+              class="w-full rounded-lg bg-orange-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:bg-orange-700">
+        Save settings
+      </button>
+    </div>
+  </form>
+</div>
+{% endblock %}

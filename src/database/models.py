@@ -1,8 +1,10 @@
 """SQLModel database models.
 
-A single `RecipeJob` row is the source of truth for one extraction:
-raw scraped evidence, structured recipe JSON, rendered Markdown, validation
-report, and processing status/history.
+- `RecipeJob`: source of truth for one extraction (raw evidence, structured
+  recipe JSON, rendered Markdown, validation report, status).
+- `JobEvent`: per-stage audit log for each job (timeline / logs viewer).
+- `AppSetting`: key-value store for runtime configuration; secret values
+  are encrypted at rest (see src/services/settings_service.py).
 """
 
 from __future__ import annotations
@@ -62,4 +64,39 @@ class RecipeJob(SQLModel, table=True):
     export_results: str | None = Field(default=None, sa_column=Column(Text))
 
     created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class EventStatus(str, Enum):
+    STARTED = "started"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class JobEvent(SQLModel, table=True):
+    """One pipeline-stage event for a job (powers the logs/timeline view)."""
+
+    __tablename__ = "job_events"
+
+    id: str = Field(default_factory=_new_id, primary_key=True)
+    job_id: str = Field(index=True, foreign_key="recipe_jobs.id")
+    stage: str = Field(index=True)
+    status: EventStatus = Field(default=EventStatus.STARTED)
+    message: str | None = Field(default=None, sa_column=Column(Text))
+    duration_ms: int | None = Field(default=None)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class AppSetting(SQLModel, table=True):
+    """One runtime configuration entry (key-value).
+
+    Secret values are stored encrypted (prefixed 'enc:v1:'); see
+    src/services/settings_service.py.
+    """
+
+    __tablename__ = "app_settings"
+
+    key: str = Field(primary_key=True)
+    value: str = Field(sa_column=Column(Text, nullable=False))
     updated_at: datetime = Field(default_factory=_utcnow)

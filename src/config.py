@@ -1,7 +1,17 @@
-"""Application configuration loaded from environment variables / .env file.
+"""Application configuration.
 
-All secrets (API keys, tokens) live in the environment - never hardcoded.
-See `.env.example` for the full documented template.
+Two layers:
+
+1. `BootstrapSettings` - the minimal environment-provided settings needed
+   before the database exists: SECRET_KEY (encrypts secrets at rest),
+   database URL, port, data dir, log level.
+
+2. `Settings` - all runtime configuration, stored in the database
+   (`app_settings` table) and editable through the web UI. Secret fields
+   are encrypted at rest. Field metadata (`json_schema_extra`) drives the
+   settings UI rendering: group, label, secret flag, and choices.
+
+Use `src.services.settings_service.get_settings()` to obtain `Settings`.
 """
 
 from __future__ import annotations
@@ -10,7 +20,7 @@ from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,67 +43,221 @@ class ExportTarget(str, Enum):
     JSON = "json"
 
 
-class Settings(BaseSettings):
+class BootstrapSettings(BaseSettings):
+    """Environment-only settings required before the DB is available."""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
-    # --- Core ---
+    secret_key: str = Field(
+        default="",
+        description="Encrypts secrets stored in the database. Required. "
+        "Generate with: openssl rand -hex 32",
+    )
     port: int = 8000
-    database_url: str = "sqlite:///./data/recipes.db"
+    database_url: str = "sqlite:///./data/yum.db"
     data_dir: Path = Path("./data")
     log_level: str = "INFO"
 
-    # --- Export behavior ---
-    auto_export_on_success: bool = True
-    export_targets: str = "markdown"  # comma-separated
 
-    # --- Instagram auth ---
-    instagram_cookie_file: Path | None = None
-    instagram_username: str | None = None
+@lru_cache
+def get_bootstrap() -> BootstrapSettings:
+    """Cached bootstrap settings accessor."""
+    return BootstrapSettings()
+
+
+def _meta(
+    group: str,
+    label: str,
+    *,
+    secret: bool = False,
+    description: str = "",
+    choices: list[str] | None = None,
+) -> dict:
+    """UI metadata attached to each setting field."""
+    extra: dict = {"group": group, "label": label, "secret": secret}
+    if description:
+        extra["description"] = description
+    if choices:
+        extra["choices"] = choices
+    return extra
+
+
+class Settings(BaseModel):
+    """Runtime configuration (database-backed, web-UI editable)."""
+
+    # --- Export behavior ---
+    auto_export_on_success: bool = Field(
+        default=True,
+        json_schema_extra=_meta(
+            "Export", "Auto-export on success",
+            description="Automatically export recipes after successful extraction.",
+        ),
+    )
+    export_targets: str = Field(
+        default="markdown",
+        json_schema_extra=_meta(
+            "Export", "Export targets",
+            description="Comma-separated: mealie, tandoor, markdown, json.",
+        ),
+    )
+
+    # --- Instagram (session is set via the guided login wizard) ---
+    instagram_username: str = Field(
+        default="",
+        json_schema_extra=_meta(
+            "Instagram", "Connected account",
+            description="Set automatically by the Instagram login wizard.",
+        ),
+    )
+    instagram_session: str = Field(
+        default="",
+        json_schema_extra=_meta(
+            "Instagram", "Session data", secret=True,
+            description="Serialized Instagram session (managed by the login wizard).",
+        ),
+    )
 
     # --- Speech-to-Text ---
-    whisper_engine: WhisperEngine = WhisperEngine.LOCAL
-    whisper_model_size: str = "small"
-    whisper_device: str = "auto"
-    whisper_compute_type: str = "default"
-    openai_api_key: str | None = None
-    groq_api_key: str | None = None
+    whisper_engine: WhisperEngine = Field(
+        default=WhisperEngine.LOCAL,
+        json_schema_extra=_meta(
+            "Speech-to-Text", "Engine",
+            choices=[e.value for e in WhisperEngine],
+            description="local = faster-whisper on this machine; openai/groq = cloud API.",
+        ),
+    )
+    whisper_model_size: str = Field(
+        default="small",
+        json_schema_extra=_meta(
+            "Speech-to-Text", "Local model size",
+            choices=["tiny", "base", "small", "medium", "large-v3"],
+        ),
+    )
+    whisper_device: str = Field(
+        default="auto",
+        json_schema_extra=_meta(
+            "Speech-to-Text", "Local device", choices=["auto", "cpu", "cuda"]
+        ),
+    )
+    whisper_compute_type: str = Field(
+        default="default",
+        json_schema_extra=_meta(
+            "Speech-to-Text", "Local compute type",
+            choices=["default", "int8", "float16"],
+        ),
+    )
+    openai_api_key: str = Field(
+        default="",
+        json_schema_extra=_meta(
+            "Speech-to-Text", "OpenAI API key", secret=True,
+            description="Required when engine is 'openai'.",
+        ),
+    )
+    groq_api_key: str = Field(
+        default="",
+        json_schema_extra=_meta(
+            "Speech-to-Text", "Groq API key", secret=True,
+            description="Required when engine is 'groq'.",
+        ),
+    )
 
     # --- OCR ---
-    ocr_engine: OCREngine = OCREngine.PADDLEOCR
-    ocr_language: str = "en"
-    ocr_max_frames: int = 40
+    ocr_engine: OCREngine = Field(
+        default=OCREngine.TESSERACT,
+        json_schema_extra=_meta(
+            "OCR", "Engine",
+            choices=[e.value for e in OCREngine],
+            description="paddleocr requires local model install; tesseract is bundled.",
+        ),
+    )
+    ocr_language: str = Field(
+        default="en", json_schema_extra=_meta("OCR", "Language")
+    )
+    ocr_max_frames: int = Field(
+        default=40,
+        ge=1,
+        le=500,
+        json_schema_extra=_meta(
+            "OCR", "Max keyframes", description="Scene-change filtered frames to OCR."
+        ),
+    )
 
-    # --- Vision (VLM) ---
-    vision_enabled: bool = False
-    vision_model: str | None = None
-    vision_max_frames: int = 8
+    # --- Vision ---
+    vision_enabled: bool = Field(
+        default=False,
+        json_schema_extra=_meta("Vision", "Enable vision analysis"),
+    )
+    vision_model: str = Field(
+        default="",
+        json_schema_extra=_meta(
+            "Vision", "Vision model",
+            description="LiteLLM model string, e.g. gemini/gemini-2.5-flash or ollama/qwen2.5vl.",
+        ),
+    )
+    vision_max_frames: int = Field(
+        default=8,
+        ge=1,
+        le=50,
+        json_schema_extra=_meta("Vision", "Max keyframes"),
+    )
 
     # --- LLM reconstruction ---
-    llm_model: str = "gemini/gemini-2.5-flash"
-    llm_api_key: str | None = None
-    llm_api_base: str | None = None
+    llm_model: str = Field(
+        default="gemini/gemini-2.5-flash",
+        json_schema_extra=_meta(
+            "LLM", "Model",
+            description="LiteLLM model string: gemini/gemini-2.5-flash, gpt-4o-mini, "
+            "anthropic/claude-sonnet-4-5, ollama/llama3.1, ...",
+        ),
+    )
+    llm_api_key: str = Field(
+        default="",
+        json_schema_extra=_meta(
+            "LLM", "API key", secret=True,
+            description="Provider API key (not needed for Ollama).",
+        ),
+    )
+    llm_api_base: str = Field(
+        default="",
+        json_schema_extra=_meta(
+            "LLM", "API base URL",
+            description="Override for Ollama or self-hosted endpoints, "
+            "e.g. http://ollama:11434.",
+        ),
+    )
 
     # --- Mealie ---
-    mealie_url: str | None = None
-    mealie_api_token: str | None = None
+    mealie_url: str = Field(
+        default="",
+        json_schema_extra=_meta("Mealie", "Mealie URL"),
+    )
+    mealie_api_token: str = Field(
+        default="",
+        json_schema_extra=_meta("Mealie", "API token", secret=True),
+    )
 
     # --- Tandoor ---
-    tandoor_url: str | None = None
-    tandoor_api_token: str | None = None
+    tandoor_url: str = Field(
+        default="",
+        json_schema_extra=_meta("Tandoor", "Tandoor URL"),
+    )
+    tandoor_api_token: str = Field(
+        default="",
+        json_schema_extra=_meta("Tandoor", "API token", secret=True),
+    )
 
     # --- Markdown export ---
-    markdown_export_dir: Path = Path("./export")
-
-    @field_validator("instagram_cookie_file", mode="before")
-    @classmethod
-    def _empty_str_to_none(cls, value: object) -> object:
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
+    markdown_export_dir: str = Field(
+        default="./export",
+        json_schema_extra=_meta(
+            "Export", "Markdown export directory",
+            description="Directory (mounted volume) where .md files are written.",
+        ),
+    )
 
     @property
     def export_target_list(self) -> list[ExportTarget]:
@@ -106,13 +270,23 @@ class Settings(BaseSettings):
             try:
                 targets.append(ExportTarget(name))
             except ValueError:
-                # Ignore unknown targets rather than crash at startup;
-                # they are reported by the /health endpoint.
                 continue
         return targets
 
 
-@lru_cache
-def get_settings() -> Settings:
-    """Cached settings accessor for dependency injection."""
-    return Settings()
+def secret_field_names() -> frozenset[str]:
+    """Names of Settings fields flagged as secrets (encrypted at rest)."""
+    return frozenset(
+        name
+        for name, field in Settings.model_fields.items()
+        if (field.json_schema_extra or {}).get("secret")
+    )
+
+
+def field_groups() -> dict[str, list[str]]:
+    """Ordered mapping of UI group -> field names, for settings page rendering."""
+    groups: dict[str, list[str]] = {}
+    for name, field in Settings.model_fields.items():
+        group = (field.json_schema_extra or {}).get("group", "Other")
+        groups.setdefault(group, []).append(name)
+    return groups

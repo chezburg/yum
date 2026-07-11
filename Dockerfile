@@ -1,5 +1,8 @@
 FROM python:3.12-slim-bookworm
 
+LABEL org.opencontainers.image.title="yum" \
+      org.opencontainers.image.description="Self-hosted Instagram recipe extractor"
+
 # System dependencies:
 #  - ffmpeg: audio extraction & frame sampling
 #  - tesseract-ocr: fallback OCR engine
@@ -27,10 +30,12 @@ RUN pip install --no-cache-dir -r requirements.txt && \
     fi
 
 COPY src/ ./src/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
 
-# Writable dirs for data, config, and exports
-RUN mkdir -p /data /config /export && \
-    chown -R appuser:appuser /app /data /config /export
+# Writable dirs for data (DB + config) and markdown exports
+RUN mkdir -p /data /export && \
+    chown -R appuser:appuser /app /data /export
 
 USER appuser
 

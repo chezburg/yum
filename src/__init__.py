@@ -1,3 +1,3 @@
-"""Instagram Recipe Extractor - converts Instagram cooking content into structured recipes."""
+"""yum - self-hosted Instagram recipe extractor."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

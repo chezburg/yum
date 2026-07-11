@@ -1,38 +1,10 @@
 """API endpoint tests using FastAPI TestClient with a temp database.
 
-The pipeline executor is stubbed so no real downloads/LLM calls occur.
+The pipeline executor is stubbed (see conftest.client) so no real
+downloads/LLM calls occur.
 """
 
 from __future__ import annotations
-
-import pytest
-from fastapi.testclient import TestClient
-
-
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    # Point the app at a temp SQLite DB before anything imports settings.
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
-    monkeypatch.setenv("INSTAGRAM_COOKIE_FILE", "")
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-
-    # Reset cached settings/engine so env vars take effect.
-    import src.config as config
-    import src.database.connection as connection
-
-    config.get_settings.cache_clear()
-    connection._engine = None
-
-    import src.main as main
-
-    # Stub out the heavy pipeline: jobs are queued but never executed.
-    monkeypatch.setattr(main._executor, "submit", lambda *a, **kw: None)
-
-    with TestClient(main.app) as test_client:
-        yield test_client
-
-    config.get_settings.cache_clear()
-    connection._engine = None
 
 
 class TestExtractEndpoint:
@@ -45,7 +17,7 @@ class TestExtractEndpoint:
         body = resp.json()
         assert body["url"] == "https://www.instagram.com/reel/Cabc123/"
         assert body["status"] == "pending"
-        assert body["job_id"]
+        assert body["job_id"] in client.submitted_jobs
 
     def test_rejects_text_without_url(self, client):
         resp = client.post("/api/v1/extract", json={"text": "no url here"})
@@ -72,6 +44,10 @@ class TestJobEndpoints:
         assert listing.status_code == 200
         assert any(j["id"] == job_id for j in listing.json())
 
+        events = client.get(f"/api/v1/jobs/{job_id}/events")
+        assert events.status_code == 200
+        assert events.json() == []
+
     def test_missing_job_404(self, client):
         assert client.get("/api/v1/jobs/doesnotexist").status_code == 404
 
@@ -84,13 +60,64 @@ class TestJobEndpoints:
         resp = client.get(f"/api/v1/jobs/{job_id}/markdown")
         assert resp.status_code == 409
 
+    def test_export_unavailable_before_completion(self, client):
+        create = client.post(
+            "/api/v1/extract",
+            json={"text": "https://www.instagram.com/reel/Cex1/"},
+        )
+        job_id = create.json()["job_id"]
+        resp = client.post(
+            f"/api/v1/jobs/{job_id}/export", json={"targets": ["json"]}
+        )
+        assert resp.status_code == 409
+
+    def test_export_unknown_target_rejected(self, client):
+        resp = client.post(
+            "/api/v1/jobs/whatever/export", json={"targets": ["dropbox"]}
+        )
+        assert resp.status_code == 422
+
+
+class TestSettingsEndpoints:
+    def test_get_settings_masks_secrets(self, client):
+        client.put(
+            "/api/v1/settings", json={"values": {"llm_api_key": "sk-super-secret"}}
+        )
+        resp = client.get("/api/v1/settings")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["llm_api_key"] == "********"
+        assert "sk-super-secret" not in resp.text
+
+    def test_update_setting(self, client):
+        resp = client.put(
+            "/api/v1/settings", json={"values": {"llm_model": "gpt-4o-mini"}}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["llm_model"] == "gpt-4o-mini"
+
+    def test_unknown_setting_rejected(self, client):
+        resp = client.put(
+            "/api/v1/settings", json={"values": {"nonsense_key": "x"}}
+        )
+        assert resp.status_code == 422
+
+    def test_invalid_enum_rejected(self, client):
+        resp = client.put(
+            "/api/v1/settings", json={"values": {"whisper_engine": "banana"}}
+        )
+        assert resp.status_code == 422
+
 
 class TestHealth:
     def test_health_reports_config_without_secrets(self, client):
+        client.put(
+            "/api/v1/settings", json={"values": {"llm_api_key": "sk-leaky-key"}}
+        )
         resp = client.get("/health")
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "ok"
         assert "llm_model" in body["config"]
-        # Ensure no secret values leak into the health output.
-        assert "test-key" not in resp.text
+        assert body["config"]["instagram_connected"] is False
+        assert "sk-leaky-key" not in resp.text

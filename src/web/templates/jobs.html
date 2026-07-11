@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Jobs{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <div class="flex items-center justify-between">
+    <h1 class="text-2xl font-bold">Jobs</h1>
+    <form method="get" action="/jobs">
+      <select name="status" onchange="this.form.submit()"
+              class="rounded-lg border border-stone-300 px-3 py-1.5 text-sm">
+        <option value="">All statuses</option>
+        {% for s in statuses %}
+        <option value="{{ s }}" {% if s == current_status %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  {% if jobs %}
+  <div class="rounded-xl bg-white shadow divide-y divide-stone-100">
+    {% for job in jobs %}
+    <div class="px-5 py-3"
+         {% if job.is_running %}hx-get="/jobs/{{ job.id }}/status" hx-trigger="every 3s" hx-swap="innerHTML"{% endif %}>
+      {% include "partials/job_status.html" %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-sm text-stone-500">No jobs{% if current_status %} with status "{{ current_status }}"{% endif %}.</p>
+  {% endif %}
+</div>
+{% endblock %}

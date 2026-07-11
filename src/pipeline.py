@@ -1,8 +1,11 @@
 """Pipeline orchestrator: runs all extraction stages for one job.
 
-Each stage updates the job's status in the database so progress is
-observable. Non-critical stage failures (comments, OCR, vision) degrade
-gracefully; critical failures (download, reconstruction) fail the job.
+Each stage updates the job's status and emits job events (audit trail).
+Non-critical stage failures (comments, OCR, vision) degrade gracefully;
+critical failures (download, reconstruction) fail the job.
+
+Settings are loaded fresh from the database at the start of each run so
+web-UI configuration changes apply to the next job immediately.
 """
 
 from __future__ import annotations
@@ -19,12 +22,9 @@ from sqlmodel import Session
 from src.acquisition.comments import CommentFetchError, comments_to_dicts, fetch_comments
 from src.acquisition.downloader import download_content
 from src.analysis.text_parser import EvidenceBundle
-from src.config import ExportTarget, Settings
 from src.database.connection import get_session
 from src.database.models import JobStatus, RecipeJob
-from src.export.markdown import render_markdown, write_markdown_file
-from src.export.mealie import export_to_mealie
-from src.export.tandoor import export_to_tandoor
+from src.export.markdown import render_markdown
 from src.processing.audio import (
     TranscriptionError,
     extract_audio,
@@ -34,18 +34,21 @@ from src.processing.audio import (
 from src.processing.ocr import detections_to_dicts, run_ocr
 from src.processing.vision import run_vision
 from src.reconstruction.llm_client import reconstruct_recipe
-from src.reconstruction.schemas import StructuredRecipe, ValidationReport
+from src.services import settings_service
+from src.services.export_service import run_exports
+from src.services.job_events import record_skip, stage_timer
 from src.validation.validator import validate_recipe
 
 logger = logging.getLogger(__name__)
 
 
-def run_pipeline(job_id: str, settings: Settings) -> None:
+def run_pipeline(job_id: str) -> None:
     """Execute the full extraction pipeline for a stored job.
 
     Designed to run in a background worker; all state is persisted to the DB.
     """
-    workdir = Path(tempfile.mkdtemp(prefix="igrecipe_"))
+    settings = settings_service.get_settings()
+    workdir = Path(tempfile.mkdtemp(prefix="yum_"))
     try:
         with get_session() as session:
             job = session.get(RecipeJob, job_id)
@@ -56,7 +59,9 @@ def run_pipeline(job_id: str, settings: Settings) -> None:
 
             # --- Stage 1: Acquisition ---
             _set_status(session, job, JobStatus.DOWNLOADING)
-            content = download_content(url, workdir, settings)
+            with stage_timer(job_id, "download") as timer:
+                content = download_content(url, workdir, settings)
+                timer.note(f"Downloaded {content.video_path.name} by @{content.author}")
             job.video_metadata = json.dumps(
                 {**content.metadata_dict(), "raw_info": content.raw_info}
             )
@@ -64,7 +69,9 @@ def run_pipeline(job_id: str, settings: Settings) -> None:
 
             comments: list[dict] = []
             try:
-                comments = comments_to_dicts(fetch_comments(shortcode, settings))
+                with stage_timer(job_id, "comments") as timer:
+                    comments = comments_to_dicts(fetch_comments(shortcode, settings))
+                    timer.note(f"Fetched {len(comments)} comments")
             except CommentFetchError as exc:
                 logger.warning("Comments unavailable (continuing): %s", exc)
             job.comments = json.dumps(comments)
@@ -74,8 +81,15 @@ def run_pipeline(job_id: str, settings: Settings) -> None:
             _set_status(session, job, JobStatus.TRANSCRIBING)
             transcript_dicts: list[dict] = []
             try:
-                audio_path = extract_audio(content.video_path, workdir)
-                transcript_dicts = segments_to_dicts(transcribe(audio_path, settings))
+                with stage_timer(job_id, "transcribe") as timer:
+                    audio_path = extract_audio(content.video_path, workdir)
+                    transcript_dicts = segments_to_dicts(
+                        transcribe(audio_path, settings)
+                    )
+                    timer.note(
+                        f"{len(transcript_dicts)} segments "
+                        f"({settings.whisper_engine.value})"
+                    )
             except TranscriptionError as exc:
                 logger.warning("Transcription failed (continuing): %s", exc)
             job.raw_transcript = json.dumps(transcript_dicts)
@@ -85,7 +99,13 @@ def run_pipeline(job_id: str, settings: Settings) -> None:
             _set_status(session, job, JobStatus.OCR)
             ocr_dicts: list[dict] = []
             try:
-                ocr_dicts = detections_to_dicts(run_ocr(content.video_path, settings))
+                with stage_timer(job_id, "ocr") as timer:
+                    ocr_dicts = detections_to_dicts(
+                        run_ocr(content.video_path, settings)
+                    )
+                    timer.note(
+                        f"{len(ocr_dicts)} unique texts ({settings.ocr_engine.value})"
+                    )
             except Exception as exc:  # noqa: BLE001 - OCR is best-effort
                 logger.warning("OCR failed (continuing): %s", exc)
             job.raw_ocr_text = json.dumps(ocr_dicts)
@@ -94,10 +114,15 @@ def run_pipeline(job_id: str, settings: Settings) -> None:
             # --- Stage 4: Vision ---
             _set_status(session, job, JobStatus.VISION)
             vision_facts: list[str] = []
-            try:
-                vision_facts = run_vision(content.video_path, settings)
-            except Exception as exc:  # noqa: BLE001 - vision is best-effort
-                logger.warning("Vision failed (continuing): %s", exc)
+            if settings.vision_enabled and settings.vision_model:
+                try:
+                    with stage_timer(job_id, "vision") as timer:
+                        vision_facts = run_vision(content.video_path, settings)
+                        timer.note(f"{len(vision_facts)} observed facts")
+                except Exception as exc:  # noqa: BLE001 - vision is best-effort
+                    logger.warning("Vision failed (continuing): %s", exc)
+            else:
+                record_skip(job_id, "vision", "Vision analysis disabled in settings")
             job.raw_vision = json.dumps(vision_facts)
             _touch(session, job)
 
@@ -113,13 +138,20 @@ def run_pipeline(job_id: str, settings: Settings) -> None:
                 vision_facts=vision_facts,
                 comments=comments,
             )
-            recipe = reconstruct_recipe(evidence, settings)
+            with stage_timer(job_id, "reconstruct") as timer:
+                recipe = reconstruct_recipe(evidence, settings)
+                timer.note(
+                    f"'{recipe.title}' - confidence {recipe.overall_confidence:.2f} "
+                    f"({settings.llm_model})"
+                )
             job.structured_recipe = recipe.model_dump_json()
             _touch(session, job)
 
             # --- Stage 8: Validation ---
             _set_status(session, job, JobStatus.VALIDATING)
-            report = validate_recipe(recipe)
+            with stage_timer(job_id, "validate") as timer:
+                report = validate_recipe(recipe)
+                timer.note(f"{len(report.issues)} issue(s) flagged")
             job.validation_report = report.model_dump_json()
 
             # --- Stage 9: Markdown rendering (stored in DB) ---
@@ -133,7 +165,16 @@ def run_pipeline(job_id: str, settings: Settings) -> None:
             export_results: dict[str, str] = {}
             if settings.auto_export_on_success:
                 _set_status(session, job, JobStatus.EXPORTING)
-                export_results = _run_exports(recipe, markdown, url, settings)
+                export_results = run_exports(
+                    recipe,
+                    markdown,
+                    url,
+                    settings,
+                    settings.export_target_list,
+                    job_id=job_id,
+                )
+            else:
+                record_skip(job_id, "export", "Auto-export disabled in settings")
             job.export_results = json.dumps(export_results)
 
             _set_status(session, job, JobStatus.COMPLETED)
@@ -149,35 +190,6 @@ def run_pipeline(job_id: str, settings: Settings) -> None:
                 _touch(session, job)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
-
-
-def _run_exports(
-    recipe: StructuredRecipe,
-    markdown: str,
-    source_url: str,
-    settings: Settings,
-) -> dict[str, str]:
-    """Run configured exports; individual export failures do not fail the job."""
-    results: dict[str, str] = {}
-    for target in settings.export_target_list:
-        try:
-            if target == ExportTarget.MEALIE:
-                slug = export_to_mealie(recipe, source_url, settings)
-                results["mealie"] = f"ok:{slug}"
-            elif target == ExportTarget.TANDOOR:
-                rid = export_to_tandoor(recipe, source_url, settings)
-                results["tandoor"] = f"ok:{rid}"
-            elif target == ExportTarget.MARKDOWN:
-                path = write_markdown_file(
-                    markdown, recipe.title, settings.markdown_export_dir
-                )
-                results["markdown"] = f"ok:{path}"
-            elif target == ExportTarget.JSON:
-                results["json"] = "ok:stored_in_db"
-        except Exception as exc:  # noqa: BLE001 - report per-target failures
-            logger.warning("Export to %s failed: %s", target.value, exc)
-            results[target.value] = f"error:{exc}"
-    return results
 
 
 def _set_status(session: Session, job: RecipeJob, status: JobStatus) -> None:

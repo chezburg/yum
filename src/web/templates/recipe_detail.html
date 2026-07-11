@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}{{ recipe.title }}{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <div>
+    <a href="/recipes" class="text-sm text-orange-600 hover:underline">← Recipes</a>
+    <div class="flex items-start justify-between gap-4 mt-1">
+      <div>
+        <h1 class="text-2xl font-bold">{{ recipe.title }}</h1>
+        {% if recipe.description %}<p class="text-stone-500 mt-1">{{ recipe.description }}</p>{% endif %}
+        <p class="text-xs text-stone-400 mt-1">
+          <a href="{{ url }}" target="_blank" rel="noopener" class="hover:underline">{{ url }}</a>
+        </p>
+      </div>
+      {% if recipe.overall_confidence is not none %}
+      <span class="shrink-0 rounded-full px-3 py-1 text-sm font-semibold
+        {% if recipe.overall_confidence >= 0.8 %}bg-green-100 text-green-700
+        {% elif recipe.overall_confidence >= 0.5 %}bg-amber-100 text-amber-700
+        {% else %}bg-red-100 text-red-700{% endif %}">
+        {{ "%.0f"|format(recipe.overall_confidence * 100) }}%
+      </span>
+      {% endif %}
+    </div>
+    <div class="flex gap-4 mt-2 text-sm text-stone-500">
+      {% if recipe.prep_time %}<span>⏱️ Prep: {{ recipe.prep_time }}</span>{% endif %}
+      {% if recipe.cook_time %}<span>🔥 Cook: {{ recipe.cook_time }}</span>{% endif %}
+      {% if recipe.servings %}<span>🍽️ {{ recipe.servings }}</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="grid gap-6 lg:grid-cols-3">
+    <section class="rounded-xl bg-white shadow p-6 lg:col-span-1">
+      <h2 class="font-semibold mb-3">Ingredients</h2>
+      <ul class="space-y-2">
+        {% for ing in recipe.ingredients %}
+        <li class="text-sm">
+          <span class="font-medium">{% if ing.amount %}{{ ing.amount }} {% endif %}{{ ing.name }}</span>
+          {% if ing.preparation %}<span class="text-stone-500">({{ ing.preparation }})</span>{% endif %}
+          <span class="block text-xs text-stone-400">
+            {{ ing.source }} · {{ "%.0f"|format(ing.confidence * 100) }}%
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% if recipe.equipment %}
+      <h2 class="font-semibold mt-6 mb-2">Equipment</h2>
+      <ul class="text-sm text-stone-600 space-y-1">
+        {% for item in recipe.equipment %}<li>· {{ item }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+    </section>
+
+    <section class="rounded-xl bg-white shadow p-6 lg:col-span-2">
+      <h2 class="font-semibold mb-3">Instructions</h2>
+      <ol class="space-y-3">
+        {% for step in recipe.instructions|sort(attribute="step_number") %}
+        <li class="flex gap-3 text-sm">
+          <span class="shrink-0 h-6 w-6 rounded-full bg-orange-100 text-orange-700 font-semibold flex items-center justify-center">{{ step.step_number }}</span>
+          <div>
+            {{ step.text }}
+            {% if step.duration %}<span class="text-stone-400">({{ step.duration }})</span>{% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ol>
+
+      {% if recipe.notes %}
+      <h2 class="font-semibold mt-6 mb-2">Notes</h2>
+      <ul class="text-sm text-stone-600 space-y-1">
+        {% for note in recipe.notes %}<li>· {{ note }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+
+      {% if validation.issues %}
+      <h2 class="font-semibold mt-6 mb-2">Extraction warnings</h2>
+      <ul class="space-y-1">
+        {% for issue in validation.issues %}
+        <li class="text-sm {% if issue.severity == 'error' %}text-red-600{% else %}text-amber-600{% endif %}">
+          {{ issue.severity }}: {{ issue.message }}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </section>
+  </div>
+
+  <section class="rounded-xl bg-white shadow p-6">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-semibold">Export</h2>
+      <div class="flex gap-2 text-xs text-stone-400">
+        <a href="/api/v1/jobs/{{ job_id }}/markdown" download="{{ recipe.title }}.md"
+           class="rounded-lg bg-stone-100 px-3 py-1.5 font-medium text-stone-600 hover:bg-stone-200">⬇ .md file</a>
+        <a href="/api/v1/jobs/{{ job_id }}" target="_blank"
+           class="rounded-lg bg-stone-100 px-3 py-1.5 font-medium text-stone-600 hover:bg-stone-200">⬇ JSON</a>
+      </div>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      {% for target in export_targets %}
+      <form hx-post="/recipes/{{ job_id }}/export" hx-target="#export-result" hx-swap="innerHTML">
+        <input type="hidden" name="target" value="{{ target }}">
+        <button type="submit"
+                class="rounded-lg px-4 py-2 text-sm font-semibold
+                {% if target in configured_targets %}bg-orange-600 text-white hover:bg-orange-700{% else %}bg-stone-200 text-stone-600 hover:bg-stone-300{% endif %}">
+          Send to {{ target }}
+        </button>
+      </form>
+      {% endfor %}
+    </div>
+    <div id="export-result" class="mt-3">
+      {% if exports %}
+      {% include "partials/export_result.html" with context %}
+      {% endif %}
+    </div>
+
+    <details class="mt-6">
+      <summary class="cursor-pointer text-sm font-medium text-stone-600">Markdown preview (copy for Obsidian)</summary>
+      <pre class="mt-3 rounded-lg bg-stone-900 text-stone-100 p-4 text-xs overflow-x-auto whitespace-pre-wrap">{{ markdown }}</pre>
+    </details>
+  </section>
+</div>
+{% endblock %}

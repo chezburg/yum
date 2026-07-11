@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yt_dlp
 
+from src.acquisition.auth import write_netscape_cookies
 from src.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -92,13 +93,13 @@ def download_content(
         "retries": 3,
     }
 
-    cookie_file = settings.instagram_cookie_file
-    if cookie_file and Path(cookie_file).is_file():
+    cookie_file = write_netscape_cookies(settings, dest_dir)
+    if cookie_file is not None:
         ydl_opts["cookiefile"] = str(cookie_file)
     else:
         logger.warning(
-            "No Instagram cookie file found at %s - downloads may be rate-limited.",
-            cookie_file,
+            "No Instagram session stored - downloads may be rate-limited. "
+            "Connect your account in Settings."
         )
 
     try:

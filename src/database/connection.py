@@ -8,7 +8,7 @@ from pathlib import Path
 
 from sqlmodel import Session, SQLModel, create_engine
 
-from src.config import get_settings
+from src.config import get_bootstrap
 
 _engine = None
 
@@ -17,8 +17,7 @@ def get_engine():
     """Lazily create the SQLAlchemy engine (singleton)."""
     global _engine
     if _engine is None:
-        settings = get_settings()
-        url = settings.database_url
+        url = get_bootstrap().database_url
         if url.startswith("sqlite"):
             # Ensure the parent directory of the SQLite file exists.
             db_path = url.split("///", 1)[-1]
@@ -32,11 +31,25 @@ def get_engine():
 
 
 def init_db() -> None:
-    """Create all tables if they do not exist."""
+    """Bring the database schema up to date via Alembic migrations.
+
+    Falls back to SQLModel.create_all when the Alembic environment is not
+    available (e.g. certain test setups).
+    """
     # Import models so SQLModel metadata is populated.
     from src.database import models  # noqa: F401
 
-    SQLModel.metadata.create_all(get_engine())
+    engine = get_engine()
+    alembic_ini = Path(__file__).resolve().parents[2] / "alembic.ini"
+    if alembic_ini.is_file():
+        from alembic import command
+        from alembic.config import Config
+
+        cfg = Config(str(alembic_ini))
+        cfg.set_main_option("sqlalchemy.url", get_bootstrap().database_url)
+        command.upgrade(cfg, "head")
+    else:
+        SQLModel.metadata.create_all(engine)
 
 
 @contextmanager
