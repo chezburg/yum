@@ -58,8 +58,13 @@ class BootstrapSettings(BaseSettings):
         "Generate with: openssl rand -hex 32",
     )
     port: int = 8000
-    database_url: str = "sqlite:///./data/yum.db"
-    data_dir: Path = Path("./data")
+    # Absolute path matching the /data volume mount (see docker-compose.yml
+    # and Dockerfile). Using a relative path here is dangerous: it would
+    # resolve against the container's CWD (/app), which is never created/
+    # writable, causing "unable to open database file" if DATABASE_URL is
+    # ever left unset.
+    database_url: str = "sqlite:////data/yum.db"
+    data_dir: Path = Path("/data")
     log_level: str = "INFO"
 
 
