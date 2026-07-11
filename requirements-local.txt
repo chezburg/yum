@@ -1,0 +1,8 @@
+# Optional local-model dependencies.
+# Install these only if you configure local engines in .env:
+#   WHISPER_ENGINE=local  -> faster-whisper
+#   OCR_ENGINE=paddleocr  -> paddleocr + paddlepaddle
+
+faster-whisper>=1.0.3
+paddleocr>=2.8.0
+paddlepaddle>=2.6.0

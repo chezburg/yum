@@ -1,0 +1,34 @@
+# Environment & secrets
+.env
+*.session
+instagram_cookies.txt
+config/*.txt
+config/*.session
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Data & artifacts
+data/
+*.db
+*.sqlite
+*.sqlite3
+downloads/
+*.mp4
+*.wav
+*.mp3
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

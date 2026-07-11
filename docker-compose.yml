@@ -1,0 +1,44 @@
+services:
+  recipe-extractor:
+    build:
+      context: .
+      args:
+        # Set to "true" to bake local models (faster-whisper, PaddleOCR) into the image
+        INSTALL_LOCAL_MODELS: "false"
+    container_name: ig-recipe-extractor
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      # Persistent database & downloaded media
+      - ./data:/data
+      # Instagram cookies / session files (read-only)
+      - ./config:/config:ro
+      # Markdown/Obsidian export target - point this at your vault if desired
+      - ./export:/export
+
+  # --- Optional: local LLM via Ollama ---
+  # Uncomment to run reconstruction/vision fully locally.
+  # Then set in .env:
+  #   LLM_MODEL=ollama/llama3.1
+  #   LLM_API_BASE=http://ollama:11434
+  #
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ollama-models:/root/.ollama
+  #   # For NVIDIA GPU acceleration:
+  #   # deploy:
+  #   #   resources:
+  #   #     reservations:
+  #   #       devices:
+  #   #         - driver: nvidia
+  #   #           count: all
+  #   #           capabilities: [gpu]
+
+# volumes:
+#   ollama-models:
