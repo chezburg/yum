@@ -70,3 +70,62 @@ class TestParseRecipe:
         payload["ingredients"][0]["source"] = "hallucination"
         with pytest.raises(ValidationError):
             _parse_recipe(json.dumps(payload))
+
+
+class TestNormalization:
+    """Regression tests for near-miss LLM output seen in production logs."""
+
+    def test_integer_amount_coerced_to_string(self):
+        payload = _valid_payload()
+        payload["ingredients"][0]["amount"] = 4
+        recipe = _parse_recipe(json.dumps(payload))
+        assert recipe.ingredients[0].amount == "4"
+
+    def test_float_amount_coerced_to_string(self):
+        payload = _valid_payload()
+        payload["ingredients"][0]["amount"] = 0.25
+        recipe = _parse_recipe(json.dumps(payload))
+        assert recipe.ingredients[0].amount == "0.25"
+
+    def test_integer_servings_coerced_to_string(self):
+        payload = _valid_payload()
+        payload["servings"] = 2
+        recipe = _parse_recipe(json.dumps(payload))
+        assert recipe.servings == "2"
+
+    def test_string_notes_wrapped_in_list(self):
+        payload = _valid_payload()
+        payload["notes"] = "The original caption instructs to garnish."
+        recipe = _parse_recipe(json.dumps(payload))
+        assert recipe.notes == ["The original caption instructs to garnish."]
+
+    def test_empty_string_notes_wrapped_as_empty_list(self):
+        payload = _valid_payload()
+        payload["notes"] = ""
+        recipe = _parse_recipe(json.dumps(payload))
+        assert recipe.notes == []
+
+    def test_step_key_aliased_to_step_number(self):
+        payload = _valid_payload()
+        del payload["instructions"][0]["step_number"]
+        payload["instructions"][0]["step"] = 1
+        recipe = _parse_recipe(json.dumps(payload))
+        assert recipe.instructions[0].step_number == 1
+
+    def test_string_tags_wrapped_in_list(self):
+        payload = _valid_payload()
+        payload["tags"] = "italian"
+        recipe = _parse_recipe(json.dumps(payload))
+        assert recipe.tags == ["italian"]
+
+    def test_invalid_source_still_rejected_after_normalization(self):
+        payload = _valid_payload()
+        payload["ingredients"][0]["source"] = "vision analysis"
+        with pytest.raises(ValidationError):
+            _parse_recipe(json.dumps(payload))
+
+    def test_missing_required_title_still_rejected(self):
+        payload = _valid_payload()
+        del payload["title"]
+        with pytest.raises(ValidationError):
+            _parse_recipe(json.dumps(payload))

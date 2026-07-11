@@ -40,8 +40,14 @@ def fetch_comments(shortcode: str, settings: Settings) -> list[Comment]:
     Comment scraping is best-effort: failures are raised as CommentFetchError
     so the pipeline can continue without comments rather than abort.
     """
+    loader = build_loader(settings)
+    if not (settings.instagram_session and settings.instagram_username):
+        logger.warning(
+            "Fetching comments for %s with no Instagram session - anonymous "
+            "requests are frequently rate-limited or rejected by Instagram.",
+            shortcode,
+        )
     try:
-        loader = build_loader(settings)
         post = instaloader.Post.from_shortcode(loader.context, shortcode)
         creator = post.owner_username
 
@@ -75,7 +81,15 @@ def fetch_comments(shortcode: str, settings: Settings) -> list[Comment]:
         comments.sort(key=lambda c: (not c.is_creator, -c.likes))
         return comments
     except Exception as exc:  # noqa: BLE001 - instaloader raises many exception types
-        raise CommentFetchError(f"Failed to fetch comments for {shortcode}: {exc}") from exc
+        logger.warning(
+            "Comment fetch failed for %s with %s: %s",
+            shortcode,
+            type(exc).__name__,
+            exc,
+        )
+        raise CommentFetchError(
+            f"Failed to fetch comments for {shortcode} ({type(exc).__name__}): {exc}"
+        ) from exc
 
 
 def comments_to_dicts(comments: list[Comment]) -> list[dict]:

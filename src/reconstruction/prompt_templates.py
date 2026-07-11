@@ -34,7 +34,32 @@ and note it.
 - Instructions must be ordered, complete, and actionable.
 - Use `notes` for any missing information, ambiguities, or assumptions.
 - `tags` should include cuisine and meal-type categories you can infer.
-- Respond ONLY with JSON matching the provided schema."""
+
+OUTPUT FORMAT - you MUST follow these exact field names and types. Output \
+that violates any of these rules will be rejected and you will be asked to \
+redo it, so get it right the first time:
+- Top-level object requires: `title` (string), `overall_confidence` (number \
+0.0-1.0). `description`, `prep_time`, `cook_time`, `servings` are strings or \
+null (never numbers - e.g. servings must be "2", not 2). `equipment` and \
+`tags` are arrays of strings. `notes` MUST be a JSON array of strings (e.g. \
+["Note one", "Note two"]) - never a single string, even if there is only one \
+note.
+- Each item in `ingredients` is an object with EXACTLY these keys: `name` \
+(string), `amount` (string or null - ALWAYS a string, e.g. "4", "2 cups", \
+"0.5 tsp" - never a bare number), `preparation` (string or null), `source` \
+(string enum, see below), `confidence` (number 0.0-1.0).
+- Each item in `instructions` is an object with EXACTLY these keys: \
+`step_number` (integer, starting at 1 - the key MUST be named `step_number`, \
+NOT `step`), `text` (string), `duration` (string or null), `source` (string \
+enum, see below), `confidence` (number 0.0-1.0).
+- The `source` field on every ingredient and instruction MUST be exactly one \
+of these literal strings (no other values, no free text, no synonyms): \
+"creator_reply", "creator_comment", "pinned_comment", "caption", "ocr", \
+"transcript", "vision", "community_comment", "inferred". For example, \
+evidence derived from analyzing video frames must use "vision", NOT "vision \
+analysis" or any other phrase.
+- Respond ONLY with JSON matching this schema. Do not add extra keys, do not \
+omit required keys, and do not change any key names."""
 
 
 def build_user_prompt(evidence: EvidenceBundle) -> str:
