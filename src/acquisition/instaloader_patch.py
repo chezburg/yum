@@ -1,7 +1,7 @@
-"""Compatibility patch for instaloader's broken Post-metadata fetching.
+"""Compatibility patches for two independent instaloader bugs.
 
-Background
-----------
+Background - Post metadata (doc_id deprecation)
+-------------------------------------------------
 Around June 2026, Instagram deprecated the GraphQL ``doc_id``
 (``8845758582119845``, the ``xdt_shortcode_media`` query) that
 ``instaloader`` (as of the installed 4.15.2, and every release up to it)
@@ -21,12 +21,43 @@ https://github.com/instaloader/instaloader/pull/2706 (migrating to the new
 ``X-CSRFToken`` header the new endpoint requires) but is unmerged and not
 yet part of any PyPI release as of this writing.
 
-This module monkeypatches the two affected methods in-process using the
-logic from that PR, so comment/post-metadata fetching keeps working without
-depending on an unmerged fork. Remove this module (and its call site in
-``src/acquisition/auth.py``) once a released ``instaloader`` version ships
-the fix - check by bumping the dependency and running
-``tests/test_instagram_auth.py`` / a manual fetch against a real shortcode.
+Background - missing user_id after load_session() (iPhone comment endpoint)
+-----------------------------------------------------------------------------
+Once the doc_id fix above is applied, ``Post.get_comments()`` succeeds for
+small comment counts, but any post with more comments than a single GraphQL
+page (~50) is unconditionally routed to
+``Post._get_comments_via_iphone_endpoint()`` (a permanent workaround
+instaloader itself added for a separate, older pagination bug,
+:issue:`2125`). That method calls
+``InstaloaderContext.get_iphone_json()``, which sends a
+``ig-intended-user-id`` header built from ``self.user_id``.
+
+``InstaloaderContext.load_session()`` - the method this codebase's
+``build_loader()`` always uses to restore a stored session - only restores
+cookies; it never sets ``self.user_id`` (that attribute is only populated by
+``login()``/``two_factor_login()``, and is never itself persisted in the
+saved session data). So every session restored from storage sends the
+literal string ``"None"`` as ``ig-intended-user-id``, and Instagram's
+private API responds with a generic::
+
+    {"status": "fail", "message": "We're sorry, but something went wrong. Please try again."}
+
+This is a genuine gap in instaloader's own ``load_session()`` (not an
+Instagram-side deprecation), reproducible with any session restored via
+``load_session()`` rather than a fresh interactive ``login()``. It has no
+known upstream issue/PR to port from, so the fix here is derived directly
+from tracing instaloader's own code: Instagram's login flow always sets a
+``ds_user_id`` cookie, which ``load_session()`` *does* restore - so we
+recover ``user_id`` from that cookie right after the original
+``load_session()`` runs.
+
+This module monkeypatches the affected methods in-process so comment/post
+fetching keeps working without depending on an unmerged fork. Remove the
+doc_id-related patches once a released ``instaloader`` version ships that
+fix; remove the ``load_session`` patch once ``load_session()`` upstream
+sets ``user_id`` itself. Check by bumping the dependency and running
+``tests/test_instagram_auth.py``, ``tests/test_instaloader_patch.py``, and a
+manual fetch against a real shortcode with many comments.
 """
 
 from __future__ import annotations
@@ -50,23 +81,56 @@ _MEDIA_TYPES = {1: "GraphImage", 2: "GraphVideo", 8: "GraphSidecar"}
 
 _patched = False
 
+# Captured at patch-apply time so the wrapper can call through to the real
+# implementation instead of recursing into itself.
+_original_load_session = InstaloaderContext.load_session
+
 
 def apply_metadata_patch() -> None:
-    """Monkeypatch instaloader's Post metadata fetching (idempotent)."""
+    """Monkeypatch instaloader's Post/comment metadata fetching (idempotent)."""
     global _patched
     if _patched:
         return
 
     InstaloaderContext.doc_id_graphql_query = _patched_doc_id_graphql_query  # type: ignore[method-assign]
+    InstaloaderContext.load_session = _patched_load_session  # type: ignore[method-assign]
     Post._obtain_metadata = _patched_obtain_metadata  # type: ignore[method-assign]
     Post._fetch_play_count_from_clips = staticmethod(_fetch_play_count_from_clips)  # type: ignore[attr-defined]
 
     _patched = True
     logger.info(
-        "Applied instaloader post-metadata compatibility patch (Instagram "
-        "deprecated the old doc_id upstream - see "
-        "https://github.com/instaloader/instaloader/issues/2704)."
+        "Applied instaloader compatibility patches: post-metadata doc_id "
+        "(https://github.com/instaloader/instaloader/issues/2704) and "
+        "load_session() user_id recovery for the iPhone comments endpoint."
     )
+
+
+def _patched_load_session(
+    self: InstaloaderContext, username: str, sessiondata: Dict[str, Any]
+) -> None:
+    """Same as upstream ``load_session()``, plus recovering ``user_id`` from
+    the restored session's ``ds_user_id`` cookie.
+
+    Instagram sets ``ds_user_id`` on successful login and it is part of the
+    cookie set instaloader always includes in a saved session
+    (``InstaloaderContext.save_session()`` serializes the full cookie jar).
+    Upstream's ``load_session()`` never reads it back into ``self.user_id``,
+    which breaks the ``ig-intended-user-id`` header on the iPhone comments
+    endpoint (``get_iphone_json()``) for every session restored from
+    storage. See module docstring for full details.
+    """
+    _original_load_session(self, username, sessiondata)
+    ds_user_id = sessiondata.get("ds_user_id")
+    if ds_user_id:
+        try:
+            self.user_id = int(ds_user_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Stored Instagram session has a non-numeric ds_user_id "
+                "cookie (%r) - iPhone-endpoint requests (e.g. large-comment "
+                "posts) may still fail.",
+                ds_user_id,
+            )
 
 
 def _patched_doc_id_graphql_query(

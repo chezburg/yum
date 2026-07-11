@@ -161,3 +161,62 @@ class TestPatchIdempotent:
         instaloader_patch.apply_metadata_patch()
         instaloader_patch.apply_metadata_patch()
         assert instaloader_patch._patched is True
+
+
+class TestPatchedLoadSession:
+    """Covers the second, independent bug: load_session() never restoring
+    context.user_id, which breaks the ig-intended-user-id header on the
+    iPhone comments endpoint for every session restored from storage (as
+    opposed to a fresh interactive login()).
+    """
+
+    def test_recovers_user_id_from_ds_user_id_cookie(self):
+        import instaloader
+
+        loader = instaloader.Instaloader(quiet=True)
+        assert loader.context.user_id is None
+
+        loader.context.load_session(
+            "chef.user",
+            {"sessionid": "s3ss10n", "csrftoken": "tok", "ds_user_id": "987654321"},
+        )
+
+        assert loader.context.user_id == 987654321
+        assert loader.context.username == "chef.user"
+
+    def test_missing_ds_user_id_leaves_user_id_none(self):
+        import instaloader
+
+        loader = instaloader.Instaloader(quiet=True)
+
+        loader.context.load_session(
+            "chef.user", {"sessionid": "s3ss10n", "csrftoken": "tok"}
+        )
+
+        assert loader.context.user_id is None
+
+    def test_non_numeric_ds_user_id_does_not_raise(self):
+        import instaloader
+
+        loader = instaloader.Instaloader(quiet=True)
+
+        loader.context.load_session(
+            "chef.user",
+            {"sessionid": "s3ss10n", "csrftoken": "tok", "ds_user_id": "not-a-number"},
+        )
+
+        assert loader.context.user_id is None
+
+    def test_still_restores_cookies_and_csrf_header(self):
+        import instaloader
+
+        loader = instaloader.Instaloader(quiet=True)
+
+        loader.context.load_session(
+            "chef.user",
+            {"sessionid": "s3ss10n", "csrftoken": "tok", "ds_user_id": "42"},
+        )
+
+        cookies = loader.context._session.cookies.get_dict()
+        assert cookies["sessionid"] == "s3ss10n"
+        assert loader.context._session.headers["X-CSRFToken"] == "tok"
