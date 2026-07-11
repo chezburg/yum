@@ -1,4 +1,4 @@
-"""Compatibility patches for two independent instaloader bugs.
+"""Compatibility patches for three independent instaloader bugs.
 
 Background - Post metadata (doc_id deprecation)
 -------------------------------------------------
@@ -51,13 +51,44 @@ from tracing instaloader's own code: Instagram's login flow always sets a
 recover ``user_id`` from that cookie right after the original
 ``load_session()`` runs.
 
+Background - iPhone comments endpoint still rejecting cookie-restored sessions
+--------------------------------------------------------------------------------
+Even with ``user_id`` recovered, comment fetching for any post with more
+than ~50 comments kept failing with the same generic
+``{"status": "fail", "message": "...something went wrong..."}`` against
+``i.instagram.com``. ``get_iphone_json()`` builds several more
+session-derived headers the same way it builds ``ig-intended-user-id``
+(``x-mid`` from the ``mid`` cookie, ``x-ig-device-id``/
+``x-ig-family-device-id`` from the ``ig_did`` cookie) - any of which may be
+missing/stale in a web-login-derived session, and Instagram's mobile API
+may also be gating this endpoint on device-identity signals a browser
+login can never legitimately produce (a real iOS app registers a device;
+instaloader's ``login()`` never does).
+
+Rather than chase every possible missing mobile-device header, this module
+sidesteps the entire iPhone endpoint: ``comments.py`` only ever needs the
+first ~15 comments (``MAX_TOP_COMMENTS``), but ``Post.get_comments()``
+routes to the iPhone endpoint purely based on the post's *total* comment
+count, not on how many the caller actually wants. The patched
+``get_comments()`` below removes that branch so it always uses the
+GraphQL ``NodeIterator`` path (query hash
+``97b41c52301f77ce508f55e66d17620e``), which never touches
+``i.instagram.com`` and has no device-identity requirements. If Instagram
+ever also breaks this GraphQL query hash, ``get_comments()`` will raise
+normally and ``comments.py``'s existing ``except Exception`` handling
+degrades gracefully (comments unavailable, pipeline continues) exactly as
+before - this patch cannot make comment fetching worse than the unpatched
+baseline.
+
 This module monkeypatches the affected methods in-process so comment/post
 fetching keeps working without depending on an unmerged fork. Remove the
 doc_id-related patches once a released ``instaloader`` version ships that
 fix; remove the ``load_session`` patch once ``load_session()`` upstream
-sets ``user_id`` itself. Check by bumping the dependency and running
-``tests/test_instagram_auth.py``, ``tests/test_instaloader_patch.py``, and a
-manual fetch against a real shortcode with many comments.
+sets ``user_id`` itself; remove the ``get_comments`` patch once instaloader
+either fixes the underlying iPhone-endpoint device-identity issue or the
+GraphQL query-hash path is deprecated. Check by bumping the dependency and
+running ``tests/test_instagram_auth.py``, ``tests/test_instaloader_patch.py``,
+and a manual fetch against a real shortcode with many comments.
 """
 
 from __future__ import annotations
@@ -65,10 +96,16 @@ from __future__ import annotations
 import json
 import logging
 import urllib.parse
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any, Dict, Iterable, Optional
 
-from instaloader.exceptions import BadResponseException, PostChangedException
+from instaloader.exceptions import (
+    BadResponseException,
+    LoginRequiredException,
+    PostChangedException,
+)
 from instaloader.instaloadercontext import InstaloaderContext, copy_session
+from instaloader.nodeiterator import NodeIterator
 from instaloader.structures import Post
 
 logger = logging.getLogger(__name__)
@@ -96,12 +133,14 @@ def apply_metadata_patch() -> None:
     InstaloaderContext.load_session = _patched_load_session  # type: ignore[method-assign]
     Post._obtain_metadata = _patched_obtain_metadata  # type: ignore[method-assign]
     Post._fetch_play_count_from_clips = staticmethod(_fetch_play_count_from_clips)  # type: ignore[attr-defined]
+    Post.get_comments = _patched_get_comments  # type: ignore[method-assign]
 
     _patched = True
     logger.info(
         "Applied instaloader compatibility patches: post-metadata doc_id "
-        "(https://github.com/instaloader/instaloader/issues/2704) and "
-        "load_session() user_id recovery for the iPhone comments endpoint."
+        "(https://github.com/instaloader/instaloader/issues/2704), "
+        "load_session() user_id recovery, and always-GraphQL comment "
+        "fetching (bypassing the device-identity-gated iPhone endpoint)."
     )
 
 
@@ -131,6 +170,82 @@ def _patched_load_session(
                 "posts) may still fail.",
                 ds_user_id,
             )
+
+
+def _patched_get_comments(self: Post) -> Iterable[Any]:
+    """Same as upstream ``Post.get_comments()``, except the branch that
+    routes high-comment-count posts to the device-identity-gated iPhone
+    endpoint is removed - always use the GraphQL ``NodeIterator`` path
+    instead. See module docstring for why.
+
+    Mirrors ``instaloader.structures.Post.get_comments()`` line-for-line
+    apart from that one removed branch.
+    """
+    # Local import to avoid a module-level circular import (structures.py
+    # imports nothing from this module, but Profile/PostComment/
+    # PostCommentAnswer live in the same module as Post).
+    from instaloader.structures import PostComment, PostCommentAnswer, Profile
+
+    if not self._context.is_logged_in:
+        raise LoginRequiredException("Login required to access comments of a post.")
+
+    def _postcommentanswer(node):
+        return PostCommentAnswer(
+            id=int(node["id"]),
+            created_at_utc=datetime.utcfromtimestamp(node["created_at"]),
+            text=node["text"],
+            owner=Profile(self._context, node["owner"]),
+            likes_count=node.get("edge_liked_by", {}).get("count", 0),
+        )
+
+    def _postcommentanswers(node):
+        if "edge_threaded_comments" not in node:
+            return
+        answer_count = node["edge_threaded_comments"]["count"]
+        if answer_count == 0:
+            return
+        answer_edges = node["edge_threaded_comments"]["edges"]
+        if answer_count == len(answer_edges):
+            yield from (_postcommentanswer(comment["node"]) for comment in answer_edges)
+            return
+        yield from NodeIterator(
+            self._context,
+            "51fdd02b67508306ad4484ff574a0b62",
+            lambda d: d["data"]["comment"]["edge_threaded_comments"],
+            _postcommentanswer,
+            {"comment_id": node["id"]},
+            "https://www.instagram.com/p/{0}/".format(self.shortcode),
+        )
+
+    def _postcomment(node):
+        return PostComment(
+            context=self._context, node=node, answers=_postcommentanswers(node), post=self
+        )
+
+    if self.comments == 0:
+        return []
+
+    try:
+        comment_edges = self._field("edge_media_to_parent_comment", "edges")
+    except KeyError:
+        comment_edges = self._field("edge_media_to_comment", "edges")
+
+    answers_count = sum(
+        edge["node"].get("edge_threaded_comments", {}).get("count", 0)
+        for edge in comment_edges
+    )
+
+    if self.comments == len(comment_edges) + answers_count:
+        return [_postcomment(comment["node"]) for comment in comment_edges]
+
+    return NodeIterator(
+        self._context,
+        "97b41c52301f77ce508f55e66d17620e",
+        lambda d: d["data"]["shortcode_media"]["edge_media_to_parent_comment"],
+        _postcomment,
+        {"shortcode": self.shortcode},
+        "https://www.instagram.com/p/{0}/".format(self.shortcode),
+    )
 
 
 def _patched_doc_id_graphql_query(

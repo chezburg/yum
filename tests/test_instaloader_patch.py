@@ -220,3 +220,80 @@ class TestPatchedLoadSession:
         cookies = loader.context._session.cookies.get_dict()
         assert cookies["sessionid"] == "s3ss10n"
         assert loader.context._session.headers["X-CSRFToken"] == "tok"
+
+
+class TestPatchedGetComments:
+    """Covers the third fix: bypassing the iPhone endpoint for comment
+    fetching so that posts with >50 total comments use the GraphQL path,
+    avoiding device-identity requirements of i.instagram.com.
+    """
+
+    def _make_post_with_comment_count(self, context: MagicMock, count: int) -> Any:
+        """Build a Post whose metadata reports `count` comments, so
+        get_comments() would normally branch to the iPhone endpoint."""
+        from instaloader.structures import Post
+
+        post = Post(
+            context,
+            {
+                "shortcode": "DYAQcEvRfm9",
+                "edge_media_to_parent_comment": {"count": count, "edges": []},
+            },
+        )
+        return post
+
+    def test_high_comment_count_uses_graphql_not_iphone(self):
+        """Posts with more than one page of comments (~50) should NEVER call
+        get_iphone_json(); they should yield a NodeIterator backed by the
+        GraphQL query-hash path instead.
+        """
+        context = MagicMock()
+        context.is_logged_in = True
+        # NodeIterator will call graphql_query; make it return an empty page.
+        context.graphql_query.return_value = {
+            "data": {
+                "shortcode_media": {
+                    "edge_media_to_parent_comment": {"edges": [], "page_info": {"has_next_page": False}}
+                }
+            }
+        }
+
+        post = self._make_post_with_comment_count(context, 200)
+
+        # Consume the iterator to trigger the network call.
+        list(post.get_comments())
+
+        context.get_iphone_json.assert_not_called()
+        context.graphql_query.assert_called_once()
+
+    def test_low_comment_count_also_uses_graphql(self):
+        """Posts with ≤50 comments were already using GraphQL before; confirm
+        the patch preserves that and still never calls get_iphone_json().
+        """
+        context = MagicMock()
+        context.is_logged_in = True
+        context.graphql_query.return_value = {
+            "data": {
+                "shortcode_media": {
+                    "edge_media_to_parent_comment": {"edges": [], "page_info": {"has_next_page": False}}
+                }
+            }
+        }
+
+        post = self._make_post_with_comment_count(context, 10)
+
+        list(post.get_comments())
+
+        context.get_iphone_json.assert_not_called()
+
+    def test_zero_comments_returns_empty_list(self):
+        context = MagicMock()
+        context.is_logged_in = True
+
+        post = self._make_post_with_comment_count(context, 0)
+
+        result = list(post.get_comments())
+
+        assert result == []
+        context.get_iphone_json.assert_not_called()
+        context.graphql_query.assert_not_called()

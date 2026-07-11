@@ -38,12 +38,12 @@ from src.services import settings_service
 
 logger = logging.getLogger(__name__)
 
-# Instaloader has two independent bugs affecting this app (deprecated
-# post-metadata doc_id, and a missing user_id after load_session() that
-# breaks the iPhone comments endpoint) - see instaloader_patch module
-# docstring for details. Apply both compatibility patches as soon as this
-# module - the sole entry point for constructing Instaloader instances - is
-# imported.
+# Instaloader has several independent bugs affecting this app (deprecated
+# post-metadata doc_id, a missing user_id after load_session(), and the
+# iPhone comments endpoint rejecting cookie-restored sessions) - see
+# instaloader_patch module docstring for details. Apply all compatibility
+# patches as soon as this module - the sole entry point for constructing
+# Instaloader instances - is imported.
 apply_metadata_patch()
 
 # Pending 2FA logins expire after this many seconds.
