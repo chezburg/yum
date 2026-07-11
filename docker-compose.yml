@@ -14,9 +14,9 @@ services:
     volumes:
       # Persistent database (holds config, secrets encrypted with SECRET_KEY,
       # and all extracted recipes) - back this up!
-      - ./data:/data
+      - /docker/yum/data:/data
       # Markdown export target - point this at your Obsidian vault if desired
-      - ./export:/export
+      - /docker/yum/export:/export
 
   # --- Optional: local LLM via Ollama ---
   # Uncomment to run reconstruction/vision fully locally.
