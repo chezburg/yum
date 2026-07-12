@@ -20,6 +20,7 @@ data/
 *.db
 *.sqlite
 *.sqlite3
+journal.md
 downloads/
 *.mp4
 *.wav

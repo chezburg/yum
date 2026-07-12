@@ -48,7 +48,8 @@ Open `http://localhost:8000`:
 - **Recipes** - browse, search, view, and export extracted recipes; copy
   Obsidian-ready Markdown or download `.md`/JSON
 - **Jobs** - per-job pipeline timeline with stage durations, warnings, and all
-  raw evidence (transcript, OCR, comments, vision) for debugging
+  raw evidence (transcript, OCR, comments, vision) for debugging; completed or
+  failed jobs can be recomputed from stored evidence, fully re-run, or deleted
 - **Settings** - all configuration, including the guided Instagram login
 
 ### API (mobile share sheet)
@@ -73,10 +74,19 @@ GET  /api/v1/jobs/<id>             # status + structured recipe JSON
 GET  /api/v1/jobs/<id>/events      # stage-by-stage event log
 GET  /api/v1/jobs/<id>/markdown    # Obsidian-ready markdown
 POST /api/v1/jobs/<id>/export      # on-demand export {"targets": ["mealie"]}
+POST /api/v1/jobs/<id>/recompute   # retry reconstruction using stored evidence
+POST /api/v1/jobs/<id>/rerun       # clear the job and run the full pipeline again
+DELETE /api/v1/jobs/<id>           # delete a job and its event history
 GET  /api/v1/settings              # settings (secrets masked)
 PUT  /api/v1/settings              # update settings
 GET  /health                       # config summary
 ```
+
+Recompute is useful when acquisition succeeded but reconstruction produced an
+empty or invalid recipe: it retries only reconstruction, validation, rendering,
+and export without downloading or processing the Instagram post again. The web
+UI exposes these actions from both the job and recipe detail pages, while the
+recipe list also provides direct deletion.
 
 ## Configuration
 
