@@ -23,6 +23,7 @@ from src.database.models import JobStatus, RecipeJob
 from src.services import engine_test, settings_service
 from src.services.export_service import ExportUnavailableError, export_job
 from src.services.job_events import events_for_job
+from src.services.job_management import JobNotFoundError, delete_job, reset_job_for_rerun
 from src.utils.url_parser import URLParseError, extract_instagram_url
 
 logger = logging.getLogger(__name__)
@@ -33,11 +34,18 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 # Populated by main.py (same injection point as the API).
 _submit_job = None
+# Populated by main.py: reconstruction-only executor.
+_submit_recompute = None
 
 
 def set_job_submitter(submit) -> None:
     global _submit_job
     _submit_job = submit
+
+
+def set_recompute_submitter(submit) -> None:
+    global _submit_recompute
+    _submit_recompute = submit
 
 
 def _field_meta(name: str) -> dict:
@@ -251,6 +259,39 @@ def job_status_fragment(request: Request, job_id: str):
             raise HTTPException(status_code=404, detail="Job not found.")
         row = _job_row(job)
     return _render(request, "partials/job_status.html", job=row)
+
+
+@router.post("/jobs/{job_id}/recompute", response_class=HTMLResponse)
+def job_recompute(request: Request, job_id: str):
+    """HTMX target: re-run reconstruction from stored evidence (no re-download)."""
+    with get_session() as session:
+        if session.get(RecipeJob, job_id) is None:
+            raise HTTPException(status_code=404, detail="Job not found.")
+    if _submit_recompute is not None:
+        _submit_recompute(job_id)
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/jobs/{job_id}/rerun", response_class=HTMLResponse)
+def job_rerun(request: Request, job_id: str):
+    """HTMX target: full re-run (re-downloads and re-processes everything)."""
+    try:
+        reset_job_for_rerun(job_id)
+    except JobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if _submit_job is not None:
+        _submit_job(job_id)
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/jobs/{job_id}/delete", response_class=HTMLResponse)
+def job_delete(request: Request, job_id: str):
+    """HTMX target: permanently delete a job and its event log."""
+    try:
+        delete_job(job_id)
+    except JobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return RedirectResponse("/jobs", status_code=303)
 
 
 # ------------------------------------------------------------------ settings

@@ -57,11 +57,14 @@ def client(app_env, monkeypatch):
     import src.main as main
 
     submitted: list[str] = []
+    recomputed: list[str] = []
     monkeypatch.setattr(main, "init_db", lambda: None)
     monkeypatch.setattr(main, "_submit", submitted.append)
+    monkeypatch.setattr(main, "_submit_recompute", recomputed.append)
 
     with TestClient(main.app) as test_client:
         test_client.submitted_jobs = submitted
+        test_client.recomputed_jobs = recomputed
         yield test_client
 
 

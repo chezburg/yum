@@ -77,6 +77,53 @@ class TestJobEndpoints:
         )
         assert resp.status_code == 422
 
+    def test_recompute_queues_job(self, client):
+        create = client.post(
+            "/api/v1/extract",
+            json={"text": "https://www.instagram.com/reel/Crecomp1/"},
+        )
+        job_id = create.json()["job_id"]
+        resp = client.post(f"/api/v1/jobs/{job_id}/recompute")
+        assert resp.status_code == 202
+        assert resp.json() == {"job_id": job_id, "status": "recompute_queued"}
+        assert job_id in client.recomputed_jobs
+
+    def test_recompute_missing_job_404(self, client):
+        resp = client.post("/api/v1/jobs/doesnotexist/recompute")
+        assert resp.status_code == 404
+
+    def test_rerun_resets_and_queues_job(self, client):
+        create = client.post(
+            "/api/v1/extract",
+            json={"text": "https://www.instagram.com/reel/Crerun1/"},
+        )
+        job_id = create.json()["job_id"]
+        resp = client.post(f"/api/v1/jobs/{job_id}/rerun")
+        assert resp.status_code == 202
+        assert resp.json() == {"job_id": job_id, "status": "pending"}
+        assert client.submitted_jobs.count(job_id) == 2  # extract + rerun
+
+        detail = client.get(f"/api/v1/jobs/{job_id}")
+        assert detail.json()["status"] == "pending"
+
+    def test_rerun_missing_job_404(self, client):
+        resp = client.post("/api/v1/jobs/doesnotexist/rerun")
+        assert resp.status_code == 404
+
+    def test_delete_job(self, client):
+        create = client.post(
+            "/api/v1/extract",
+            json={"text": "https://www.instagram.com/reel/Cdel1/"},
+        )
+        job_id = create.json()["job_id"]
+        resp = client.delete(f"/api/v1/jobs/{job_id}")
+        assert resp.status_code == 204
+        assert client.get(f"/api/v1/jobs/{job_id}").status_code == 404
+
+    def test_delete_missing_job_404(self, client):
+        resp = client.delete("/api/v1/jobs/doesnotexist")
+        assert resp.status_code == 404
+
 
 class TestSettingsEndpoints:
     def test_get_settings_masks_secrets(self, client):

@@ -106,6 +106,68 @@ class TestPages:
         assert "LLM" in resp.text
 
 
+class TestJobActions:
+    def test_job_detail_shows_action_buttons_when_completed(self, client):
+        job_id = _make_completed_job()
+        resp = client.get(f"/jobs/{job_id}")
+        assert resp.status_code == 200
+        assert f"/jobs/{job_id}/recompute" in resp.text
+        assert f"/jobs/{job_id}/rerun" in resp.text
+        assert f"/jobs/{job_id}/delete" in resp.text
+
+    def test_job_detail_hides_action_buttons_when_running(self, client):
+        with get_session() as session:
+            job = RecipeJob(url="https://x/", shortcode="RUN1")
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            job_id = job.id
+        resp = client.get(f"/jobs/{job_id}")
+        assert resp.status_code == 200
+        assert f"/jobs/{job_id}/recompute" not in resp.text
+        assert f"/jobs/{job_id}/rerun" not in resp.text
+
+    def test_recompute_queues_and_redirects(self, client):
+        job_id = _make_completed_job()
+        resp = client.post(
+            f"/jobs/{job_id}/recompute", follow_redirects=False
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == f"/jobs/{job_id}"
+        assert job_id in client.recomputed_jobs
+
+    def test_recompute_missing_job_404(self, client):
+        resp = client.post("/jobs/doesnotexist/recompute")
+        assert resp.status_code == 404
+
+    def test_rerun_resets_and_redirects(self, client):
+        job_id = _make_completed_job()
+        resp = client.post(f"/jobs/{job_id}/rerun", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == f"/jobs/{job_id}"
+        assert job_id in client.submitted_jobs
+
+        with get_session() as session:
+            job = session.get(RecipeJob, job_id)
+            assert job.status == JobStatus.PENDING
+            assert job.structured_recipe is None
+
+    def test_rerun_missing_job_404(self, client):
+        resp = client.post("/jobs/doesnotexist/rerun")
+        assert resp.status_code == 404
+
+    def test_delete_removes_job_and_redirects(self, client):
+        job_id = _make_completed_job()
+        resp = client.post(f"/jobs/{job_id}/delete", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/jobs"
+        assert client.get(f"/jobs/{job_id}").status_code == 404
+
+    def test_delete_missing_job_404(self, client):
+        resp = client.post("/jobs/doesnotexist/delete")
+        assert resp.status_code == 404
+
+
 class TestSubmitForm:
     def test_submit_queues_job(self, client):
         resp = client.post(
@@ -121,7 +183,6 @@ class TestSubmitForm:
         assert resp.status_code == 200
         assert "No Instagram" in resp.text
         assert not client.submitted_jobs
-
 
 class TestSettingsForm:
     def test_save_settings_via_form(self, client):

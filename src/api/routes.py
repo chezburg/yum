@@ -6,6 +6,9 @@
     GET  /api/v1/jobs/{id}/events      - stage-by-stage event log
     GET  /api/v1/jobs/{id}/markdown    - rendered markdown
     POST /api/v1/jobs/{id}/export      - on-demand export
+    POST /api/v1/jobs/{id}/recompute   - re-run reconstruction from stored evidence
+    POST /api/v1/jobs/{id}/rerun       - full re-run (re-download + re-process)
+    DELETE /api/v1/jobs/{id}           - delete a job and its event log
     GET  /api/v1/settings              - masked settings dump
     PUT  /api/v1/settings              - update settings
     POST /api/v1/settings/test/{engine} - test engine connectivity (stt/llm/vision)
@@ -32,6 +35,11 @@ from src.database.models import JobStatus, RecipeJob
 from src.services import engine_test, settings_service
 from src.services.export_service import ExportUnavailableError, export_job
 from src.services.job_events import events_for_job
+from src.services.job_management import (
+    JobNotFoundError,
+    delete_job,
+    reset_job_for_rerun,
+)
 from src.utils.url_parser import URLParseError, extract_instagram_url
 
 logger = logging.getLogger(__name__)
@@ -40,12 +48,20 @@ router = APIRouter()
 
 # Populated by main.py with the pipeline executor's submit function.
 _submit_job = None
+# Populated by main.py with the reconstruction-only submit function.
+_submit_recompute = None
 
 
 def set_job_submitter(submit) -> None:
     """Dependency injection point for the background job executor."""
     global _submit_job
     _submit_job = submit
+
+
+def set_recompute_submitter(submit) -> None:
+    """Dependency injection point for the reconstruction-only executor."""
+    global _submit_recompute
+    _submit_recompute = submit
 
 
 # ---------------------------------------------------------------- extraction
@@ -195,6 +211,41 @@ def export_job_endpoint(job_id: str, request: ExportJobRequest) -> dict:
     except ExportUnavailableError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"results": results}
+
+
+@router.post("/api/v1/jobs/{job_id}/recompute", status_code=202)
+def recompute_job_endpoint(job_id: str) -> dict:
+    """Re-run reconstruction/validation/export from evidence already stored
+    on the job, without re-downloading or re-transcribing anything."""
+    with get_session() as session:
+        if session.get(RecipeJob, job_id) is None:
+            raise HTTPException(status_code=404, detail="Job not found.")
+    if _submit_recompute is None:
+        raise HTTPException(status_code=503, detail="Job executor not ready.")
+    _submit_recompute(job_id)
+    return {"job_id": job_id, "status": "recompute_queued"}
+
+
+@router.post("/api/v1/jobs/{job_id}/rerun", status_code=202)
+def rerun_job_endpoint(job_id: str) -> dict:
+    """Full re-run of a job: re-downloads and re-processes everything."""
+    try:
+        reset_job_for_rerun(job_id)
+    except JobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if _submit_job is None:
+        raise HTTPException(status_code=503, detail="Job executor not ready.")
+    _submit_job(job_id)
+    return {"job_id": job_id, "status": JobStatus.PENDING.value}
+
+
+@router.delete("/api/v1/jobs/{job_id}", status_code=204)
+def delete_job_endpoint(job_id: str) -> None:
+    """Permanently delete a job and its event log."""
+    try:
+        delete_job(job_id)
+    except JobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ------------------------------------------------------------------ settings

@@ -23,7 +23,7 @@ from src.acquisition.comments import CommentFetchError, comments_to_dicts, fetch
 from src.acquisition.downloader import download_content
 from src.analysis.text_parser import EvidenceBundle
 from src.database.connection import get_session
-from src.database.models import JobStatus, RecipeJob
+from src.database.models import EventStatus, JobStatus, RecipeJob
 from src.export.markdown import render_markdown
 from src.processing.audio import (
     TranscriptionError,
@@ -36,10 +36,14 @@ from src.processing.vision import run_vision
 from src.reconstruction.llm_client import reconstruct_recipe
 from src.services import settings_service
 from src.services.export_service import run_exports
-from src.services.job_events import record_skip, stage_timer
+from src.services.job_events import record_event, record_skip, stage_timer
 from src.validation.validator import validate_recipe
 
 logger = logging.getLogger(__name__)
+
+
+class RecomputeUnavailableError(RuntimeError):
+    """Raised when a job has no stored evidence to recompute a recipe from."""
 
 
 def run_pipeline(job_id: str) -> None:
@@ -206,6 +210,98 @@ def run_pipeline(job_id: str) -> None:
                 _touch(session, job)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def run_reconstruction_only(job_id: str) -> None:
+    """Re-run reconstruction/validation/export from evidence already stored on the job.
+
+    Does not re-download or re-transcribe anything; reuses the acquisition,
+    transcription, OCR, and vision evidence already persisted on the
+    ``RecipeJob`` row from a prior full run. Useful for retrying the LLM
+    reconstruction step after a bad result (e.g. empty ingredients) without
+    burning API/download quota on unrelated stages.
+    """
+    settings = settings_service.get_settings()
+    try:
+        with get_session() as session:
+            job = session.get(RecipeJob, job_id)
+            if job is None:
+                logger.error("Job %s not found.", job_id)
+                return
+            url, author = job.url, ""
+            video_metadata = json.loads(job.video_metadata or "{}")
+            if not video_metadata:
+                raise RecomputeUnavailableError(
+                    f"Job {job_id} has no stored evidence to recompute from."
+                )
+            author = video_metadata.get("author") or ""
+
+            record_event(job_id, "recompute", EventStatus.STARTED, "Recompute requested")
+
+            # --- Reconstruction ---
+            _set_status(session, job, JobStatus.RECONSTRUCTING)
+            evidence = EvidenceBundle(
+                caption=video_metadata.get("caption") or "",
+                title=video_metadata.get("title") or "",
+                author=author,
+                hashtags=video_metadata.get("hashtags") or [],
+                transcript_segments=json.loads(job.raw_transcript or "[]"),
+                ocr_detections=json.loads(job.raw_ocr_text or "[]"),
+                vision_facts=json.loads(job.raw_vision or "[]"),
+                comments=json.loads(job.comments or "[]"),
+            )
+            with stage_timer(job_id, "reconstruct") as timer:
+                recipe = reconstruct_recipe(evidence, settings)
+                timer.note(
+                    f"'{recipe.title}' - confidence {recipe.overall_confidence:.2f} "
+                    f"({settings.llm_model})"
+                )
+            job.structured_recipe = recipe.model_dump_json()
+            _touch(session, job)
+
+            # --- Validation ---
+            _set_status(session, job, JobStatus.VALIDATING)
+            with stage_timer(job_id, "validate") as timer:
+                report = validate_recipe(recipe)
+                timer.note(f"{len(report.issues)} issue(s) flagged")
+            job.validation_report = report.model_dump_json()
+
+            # --- Markdown rendering ---
+            markdown = render_markdown(
+                recipe, source_url=url, author=author, validation=report
+            )
+            job.markdown_content = markdown
+            _touch(session, job)
+
+            # --- Export ---
+            export_results: dict[str, str] = {}
+            if settings.auto_export_on_success:
+                _set_status(session, job, JobStatus.EXPORTING)
+                export_results = run_exports(
+                    recipe,
+                    markdown,
+                    url,
+                    settings,
+                    settings.export_target_list,
+                    job_id=job_id,
+                )
+            else:
+                record_skip(job_id, "export", "Auto-export disabled in settings")
+            job.export_results = json.dumps(export_results)
+
+            _set_status(session, job, JobStatus.COMPLETED)
+            record_event(job_id, "recompute", EventStatus.COMPLETED, "Recompute finished")
+            logger.info("Job %s recomputed: %s", job_id, recipe.title)
+
+    except Exception as exc:  # noqa: BLE001 - top-level job failure handler
+        logger.exception("Job %s recompute failed.", job_id)
+        record_event(job_id, "recompute", EventStatus.FAILED, str(exc)[:2000])
+        with get_session() as session:
+            job = session.get(RecipeJob, job_id)
+            if job is not None:
+                job.status = JobStatus.FAILED
+                job.error_message = str(exc)[:2000]
+                _touch(session, job)
 
 
 def _set_status(session: Session, job: RecipeJob, status: JobStatus) -> None:

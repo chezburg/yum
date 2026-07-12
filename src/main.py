@@ -16,11 +16,13 @@ from fastapi import FastAPI
 from src import __version__
 from src.api.routes import router as api_router
 from src.api.routes import set_job_submitter as set_api_submitter
+from src.api.routes import set_recompute_submitter as set_api_recompute_submitter
 from src.config import get_bootstrap
 from src.database.connection import init_db
-from src.pipeline import run_pipeline
+from src.pipeline import run_pipeline, run_reconstruction_only
 from src.web.routes import router as web_router
 from src.web.routes import set_job_submitter as set_web_submitter
+from src.web.routes import set_recompute_submitter as set_web_recompute_submitter
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,10 @@ _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pipeline")
 
 def _submit(job_id: str) -> None:
     _executor.submit(run_pipeline, job_id)
+
+
+def _submit_recompute(job_id: str) -> None:
+    _executor.submit(run_reconstruction_only, job_id)
 
 
 @asynccontextmanager
@@ -48,6 +54,8 @@ async def lifespan(app: FastAPI):
     init_db()
     set_api_submitter(_submit)
     set_web_submitter(_submit)
+    set_api_recompute_submitter(_submit_recompute)
+    set_web_recompute_submitter(_submit_recompute)
     logger.info("yum v%s started.", __version__)
     yield
     _executor.shutdown(wait=False, cancel_futures=True)
