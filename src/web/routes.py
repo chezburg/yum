@@ -187,6 +187,39 @@ def recipe_export(request: Request, job_id: str, target: str = Form(...)):
     return _render(request, "partials/export_result.html", results=results)
 
 
+@router.post("/recipes/{job_id}/recompute", response_class=HTMLResponse)
+def recipe_recompute(request: Request, job_id: str):
+    """Re-run reconstruction from stored evidence, from the recipe page."""
+    with get_session() as session:
+        if session.get(RecipeJob, job_id) is None:
+            raise HTTPException(status_code=404, detail="Recipe not found.")
+    if _submit_recompute is not None:
+        _submit_recompute(job_id)
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/recipes/{job_id}/rerun", response_class=HTMLResponse)
+def recipe_rerun(request: Request, job_id: str):
+    """Full re-run (re-download + re-process), from the recipe page."""
+    try:
+        reset_job_for_rerun(job_id)
+    except JobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if _submit_job is not None:
+        _submit_job(job_id)
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/recipes/{job_id}/delete", response_class=HTMLResponse)
+def recipe_delete(request: Request, job_id: str):
+    """Permanently delete a recipe (its underlying job and event log)."""
+    try:
+        delete_job(job_id)
+    except JobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return RedirectResponse("/recipes", status_code=303)
+
+
 # ---------------------------------------------------------------------- jobs
 
 

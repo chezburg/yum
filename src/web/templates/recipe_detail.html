@@ -26,6 +26,27 @@
       {% if recipe.cook_time %}<span>🔥 Cook: {{ recipe.cook_time }}</span>{% endif %}
       {% if recipe.servings %}<span>🍽️ {{ recipe.servings }}</span>{% endif %}
     </div>
+    <div class="mt-3 flex flex-wrap gap-2">
+      <form method="post" action="/recipes/{{ job_id }}/recompute">
+        <button type="submit"
+                class="rounded-lg border border-stone-300 bg-white px-4 py-2 text-sm font-semibold text-stone-700 hover:bg-stone-50">
+          Recompute recipe
+        </button>
+      </form>
+      <form method="post" action="/recipes/{{ job_id }}/rerun">
+        <button type="submit"
+                class="rounded-lg border border-stone-300 bg-white px-4 py-2 text-sm font-semibold text-stone-700 hover:bg-stone-50">
+          Full re-run
+        </button>
+      </form>
+      <form method="post" action="/recipes/{{ job_id }}/delete"
+            onsubmit="return confirm('Delete this recipe permanently? This cannot be undone.');">
+        <button type="submit"
+                class="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50">
+          Delete recipe
+        </button>
+      </form>
+    </div>
   </div>
 
   <div class="grid gap-6 lg:grid-cols-3">

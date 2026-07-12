@@ -44,6 +44,9 @@ def _make_completed_job(title: str = "Test Pasta") -> str:
             url="https://www.instagram.com/reel/WEB1/",
             shortcode="WEB1",
             status=JobStatus.COMPLETED,
+            video_metadata=json.dumps(
+                {"title": title, "caption": "Delicious!", "author": "chef"}
+            ),
             structured_recipe=json.dumps(recipe),
             markdown_content="# Test Pasta\n",
             validation_report=json.dumps({"issues": []}),
@@ -127,6 +130,40 @@ class TestJobActions:
         assert f"/jobs/{job_id}/recompute" not in resp.text
         assert f"/jobs/{job_id}/rerun" not in resp.text
 
+    def test_job_detail_shows_recompute_for_failed_job_with_evidence(self, client):
+        """A job that failed after acquisition (evidence stored, no recipe
+        produced) should still offer recompute, not just full re-run."""
+        with get_session() as session:
+            job = RecipeJob(
+                url="https://x/",
+                shortcode="FAILEV1",
+                status=JobStatus.FAILED,
+                error_message="No ingredients were extracted",
+                video_metadata=json.dumps({"title": "Mystery Dish", "caption": "..."}),
+            )
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            job_id = job.id
+        resp = client.get(f"/jobs/{job_id}")
+        assert resp.status_code == 200
+        assert f"/jobs/{job_id}/recompute" in resp.text
+        assert f"/jobs/{job_id}/rerun" in resp.text
+        assert f"/jobs/{job_id}/delete" in resp.text
+
+    def test_job_detail_hides_recompute_without_evidence(self, client):
+        """A job that never got past pending has no evidence to recompute from."""
+        with get_session() as session:
+            job = RecipeJob(url="https://x/", shortcode="NOEV1", status=JobStatus.FAILED)
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            job_id = job.id
+        resp = client.get(f"/jobs/{job_id}")
+        assert resp.status_code == 200
+        assert f"/jobs/{job_id}/recompute" not in resp.text
+        assert f"/jobs/{job_id}/rerun" in resp.text
+
     def test_recompute_queues_and_redirects(self, client):
         job_id = _make_completed_job()
         resp = client.post(
@@ -165,6 +202,61 @@ class TestJobActions:
 
     def test_delete_missing_job_404(self, client):
         resp = client.post("/jobs/doesnotexist/delete")
+        assert resp.status_code == 404
+
+
+class TestRecipeActions:
+    def test_recipe_detail_shows_action_buttons(self, client):
+        job_id = _make_completed_job()
+        resp = client.get(f"/recipes/{job_id}")
+        assert resp.status_code == 200
+        assert f"/recipes/{job_id}/recompute" in resp.text
+        assert f"/recipes/{job_id}/rerun" in resp.text
+        assert f"/recipes/{job_id}/delete" in resp.text
+
+    def test_recipes_list_shows_delete_button(self, client):
+        job_id = _make_completed_job("Garlic Noodles")
+        resp = client.get("/recipes")
+        assert resp.status_code == 200
+        assert f"/recipes/{job_id}/delete" in resp.text
+
+    def test_recompute_from_recipe_page_queues_and_redirects(self, client):
+        job_id = _make_completed_job()
+        resp = client.post(
+            f"/recipes/{job_id}/recompute", follow_redirects=False
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == f"/jobs/{job_id}"
+        assert job_id in client.recomputed_jobs
+
+    def test_recompute_from_recipe_page_missing_job_404(self, client):
+        resp = client.post("/recipes/doesnotexist/recompute")
+        assert resp.status_code == 404
+
+    def test_rerun_from_recipe_page_resets_and_redirects(self, client):
+        job_id = _make_completed_job()
+        resp = client.post(f"/recipes/{job_id}/rerun", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == f"/jobs/{job_id}"
+        assert job_id in client.submitted_jobs
+
+        with get_session() as session:
+            job = session.get(RecipeJob, job_id)
+            assert job.status == JobStatus.PENDING
+
+    def test_rerun_from_recipe_page_missing_job_404(self, client):
+        resp = client.post("/recipes/doesnotexist/rerun")
+        assert resp.status_code == 404
+
+    def test_delete_from_recipe_page_removes_and_redirects(self, client):
+        job_id = _make_completed_job()
+        resp = client.post(f"/recipes/{job_id}/delete", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/recipes"
+        assert client.get(f"/recipes/{job_id}").status_code == 404
+
+    def test_delete_from_recipe_page_missing_job_404(self, client):
+        resp = client.post("/recipes/doesnotexist/delete")
         assert resp.status_code == 404
 
 
