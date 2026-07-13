@@ -71,23 +71,30 @@ first ~15 comments (``MAX_TOP_COMMENTS``), but ``Post.get_comments()``
 routes to the iPhone endpoint purely based on the post's *total* comment
 count, not on how many the caller actually wants. The patched
 ``get_comments()`` below removes that branch so it always uses the
-GraphQL ``NodeIterator`` path (query hash
-``97b41c52301f77ce508f55e66d17620e``), which never touches
-``i.instagram.com`` and has no device-identity requirements. If Instagram
-ever also breaks this GraphQL query hash, ``get_comments()`` will raise
-normally and ``comments.py``'s existing ``except Exception`` handling
-degrades gracefully (comments unavailable, pipeline continues) exactly as
-before - this patch cannot make comment fetching worse than the unpatched
-baseline.
+GraphQL ``doc_id`` path (doc_id ``6974885689225067``), which never touches
+``i.instagram.com`` and has no device-identity requirements.
+
+Background - Instagram deprecated the comment query_hash (July 2026)
+--------------------------------------------------------------------
+Around July 2026, Instagram deprecated the legacy GraphQL ``query_hash``
+endpoint for comments (``97b41c52301f77ce508f55e66d17620e``), migrating
+to the modern ``doc_id``-based POST request pattern (same as the post
+metadata migration in June 2026). The deprecated endpoint returns 401
+"Please wait a few minutes before you try again" regardless of rate
+limiting or session state. The patched ``get_comments()`` now uses
+``doc_id`` ``6974885689225067`` with the post's numeric ``mediapk``
+identifier. If Instagram deprecates this doc_id in the future,
+``get_comments()`` will raise normally and ``comments.py``'s existing
+``except Exception`` handling degrades gracefully (comments unavailable,
+pipeline continues) - this patch cannot make comment fetching worse than
+the unpatched baseline.
 
 This module monkeypatches the affected methods in-process so comment/post
 fetching keeps working without depending on an unmerged fork. Remove the
-doc_id-related patches once a released ``instaloader`` version ships that
-fix; remove the ``load_session`` patch once ``load_session()`` upstream
-sets ``user_id`` itself; remove the ``get_comments`` patch once instaloader
-either fixes the underlying iPhone-endpoint device-identity issue or the
-GraphQL query-hash path is deprecated. Check by bumping the dependency and
-running ``tests/test_instagram_auth.py``, ``tests/test_instaloader_patch.py``,
+doc_id-related patches once a released ``instaloader`` version ships those
+fixes; remove the ``load_session`` patch once ``load_session()`` upstream
+sets ``user_id`` itself. Check by bumping the dependency and running
+``tests/test_instagram_auth.py``, ``tests/test_instaloader_patch.py``,
 and a manual fetch against a real shortcode with many comments.
 """
 
@@ -113,6 +120,7 @@ logger = logging.getLogger(__name__)
 # New working doc_ids that replace the deprecated ones (see module docstring).
 _POST_METADATA_DOC_ID = "27128499623469141"  # PolarisPostRootQuery
 _CLIPS_CONNECTION_DOC_ID = "27234427476213202"  # play_count fallback for reels
+_POST_COMMENTS_DOC_ID = "6974885689225067"  # Comment pagination (replaces query_hash 97b41c52301f77ce508f55e66d17620e)
 
 _MEDIA_TYPES = {1: "GraphImage", 2: "GraphVideo", 8: "GraphSidecar"}
 
@@ -139,9 +147,81 @@ def apply_metadata_patch() -> None:
     logger.info(
         "Applied instaloader compatibility patches: post-metadata doc_id "
         "(https://github.com/instaloader/instaloader/issues/2704), "
-        "load_session() user_id recovery, and always-GraphQL comment "
-        "fetching (bypassing the device-identity-gated iPhone endpoint)."
+        "load_session() user_id recovery, and doc_id-based comment "
+        "fetching (bypassing deprecated query_hash and device-identity-gated iPhone endpoint)."
     )
+
+
+class _DocIdCommentIterator:
+    """Custom iterator for doc_id-based comment pagination.
+    
+    Mirrors NodeIterator's interface but uses doc_id_graphql_query instead
+    of the deprecated query_hash graphql_query. Required because Instagram
+    deprecated the legacy query_hash endpoint for comments in July 2026.
+    """
+
+    def __init__(
+        self,
+        context: InstaloaderContext,
+        doc_id: str,
+        node_wrapper,
+        context_wrapper,
+        query_variables: Dict[str, Any],
+        query_referer: str,
+    ):
+        self._context = context
+        self._doc_id = doc_id
+        self._node_wrapper = node_wrapper
+        self._context_wrapper = context_wrapper
+        self._query_variables = query_variables.copy()
+        self._query_referer = query_referer
+        self._page_index = 0
+        self._iteration_count = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._iteration_count == 0:
+            # First page - get initial data
+            self._data = self._query()
+        
+        # Extract nodes from current page
+        wrapper = self._node_wrapper(self._data)
+        
+        # Process all nodes on this page
+        while self._page_index < len(wrapper):
+            node = wrapper[self._page_index]
+            self._page_index += 1
+            self._iteration_count += 1
+            # Extract the actual node data (handle both direct nodes and edge-wrapped)
+            if isinstance(node, dict) and "node" in node:
+                return self._context_wrapper(node["node"])
+            return self._context_wrapper(node)
+        
+        # Current page exhausted - check for next page
+        page_info = self._data.get("data", {}).get(
+            "xdt_api__v1__media__info__comments", {}
+        ).get("page_info", {})
+        
+        if not page_info.get("has_next_page"):
+            raise StopIteration
+        
+        # Fetch next page
+        self._query_variables["after"] = page_info.get("end_cursor")
+        self._page_index = 0
+        self._data = self._query()
+        
+        # Recursively call __next__ to get first item from new page
+        return self.__next__()
+
+    def _query(self):
+        """Execute doc_id GraphQL query with current variables."""
+        return self._context.doc_id_graphql_query(
+            self._doc_id,
+            self._query_variables,
+            self._query_referer,
+        )
 
 
 def _patched_load_session(
@@ -173,13 +253,13 @@ def _patched_load_session(
 
 
 def _patched_get_comments(self: Post) -> Iterable[Any]:
-    """Same as upstream ``Post.get_comments()``, except the branch that
-    routes high-comment-count posts to the device-identity-gated iPhone
-    endpoint is removed - always use the GraphQL ``NodeIterator`` path
-    instead. See module docstring for why.
+    """Same as upstream ``Post.get_comments()``, except uses the modern
+    doc_id-based GraphQL endpoint instead of the deprecated query_hash,
+    and bypasses the device-identity-gated iPhone endpoint entirely.
+    See module docstring for full context.
 
-    Mirrors ``instaloader.structures.Post.get_comments()`` line-for-line
-    apart from that one removed branch.
+    Migrated from query_hash ``97b41c52301f77ce508f55e66d17620e`` to
+    doc_id ``6974885689225067`` (July 2026).
     """
     # Local import to avoid a module-level circular import (structures.py
     # imports nothing from this module, but Profile/PostComment/
@@ -238,12 +318,14 @@ def _patched_get_comments(self: Post) -> Iterable[Any]:
     if self.comments == len(comment_edges) + answers_count:
         return [_postcomment(comment["node"]) for comment in comment_edges]
 
-    return NodeIterator(
+    # Use doc_id-based pagination instead of deprecated query_hash.
+    # The new endpoint requires media_id (numeric pk) instead of shortcode.
+    return _DocIdCommentIterator(
         self._context,
-        "97b41c52301f77ce508f55e66d17620e",
-        lambda d: d["data"]["shortcode_media"]["edge_media_to_parent_comment"],
+        _POST_COMMENTS_DOC_ID,
+        lambda d: d["data"]["xdt_api__v1__media__info__comments"]["edges"],
         _postcomment,
-        {"shortcode": self.shortcode},
+        {"media_id": str(self.mediaid)},
         "https://www.instagram.com/p/{0}/".format(self.shortcode),
     )
 

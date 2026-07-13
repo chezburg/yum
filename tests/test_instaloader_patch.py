@@ -237,6 +237,7 @@ class TestPatchedGetComments:
             context,
             {
                 "shortcode": "DYAQcEvRfm9",
+                "id": "1234567890123456789",  # Required for mediaid property
                 "edge_media_to_parent_comment": {"count": count, "edges": []},
             },
         )
@@ -244,16 +245,16 @@ class TestPatchedGetComments:
 
     def test_high_comment_count_uses_graphql_not_iphone(self):
         """Posts with more than one page of comments (~50) should NEVER call
-        get_iphone_json(); they should yield a NodeIterator backed by the
-        GraphQL query-hash path instead.
+        get_iphone_json(); they should use doc_id_graphql_query instead.
         """
         context = MagicMock()
         context.is_logged_in = True
-        # NodeIterator will call graphql_query; make it return an empty page.
-        context.graphql_query.return_value = {
+        # doc_id_graphql_query will be called; make it return an empty page.
+        context.doc_id_graphql_query.return_value = {
             "data": {
-                "shortcode_media": {
-                    "edge_media_to_parent_comment": {"edges": [], "page_info": {"has_next_page": False}}
+                "xdt_api__v1__media__info__comments": {
+                    "edges": [],
+                    "page_info": {"has_next_page": False}
                 }
             }
         }
@@ -264,7 +265,7 @@ class TestPatchedGetComments:
         list(post.get_comments())
 
         context.get_iphone_json.assert_not_called()
-        context.graphql_query.assert_called_once()
+        context.doc_id_graphql_query.assert_called_once()
 
     def test_low_comment_count_also_uses_graphql(self):
         """Posts with ≤50 comments were already using GraphQL before; confirm
@@ -272,10 +273,11 @@ class TestPatchedGetComments:
         """
         context = MagicMock()
         context.is_logged_in = True
-        context.graphql_query.return_value = {
+        context.doc_id_graphql_query.return_value = {
             "data": {
-                "shortcode_media": {
-                    "edge_media_to_parent_comment": {"edges": [], "page_info": {"has_next_page": False}}
+                "xdt_api__v1__media__info__comments": {
+                    "edges": [],
+                    "page_info": {"has_next_page": False}
                 }
             }
         }
@@ -296,4 +298,4 @@ class TestPatchedGetComments:
 
         assert result == []
         context.get_iphone_json.assert_not_called()
-        context.graphql_query.assert_not_called()
+        context.doc_id_graphql_query.assert_not_called()
